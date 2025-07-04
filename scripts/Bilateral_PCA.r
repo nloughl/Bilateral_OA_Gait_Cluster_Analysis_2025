@@ -15,11 +15,10 @@ library(factoextra) # needed for fviz_eig (nice scree plots)
 load("data/df_2023_2025_combined.RData")
 
 ## Prepare data for PCA 
-varlist_long<-c("subject", "signal_side", "item", "value", "severity_contra", "severity", "sex", "signal_names", "signal_components", "knee_oa_location")
-varlist_wide<-c("subject", "signal_side", "severity","severity_contra", "sex", "signal_names", "signal_components", "knee_oa_location")
+varlist_long<-c("subject", "signal_side", "item", "value", "severity_contra", "severity", "sex", "signal_names", "signal_components", "knee_oa_location", "kl_score", "kl_contra")
+varlist_wide<-c("subject", "signal_side", "severity","severity_contra", "sex", "signal_names", "signal_components", "knee_oa_location", "kl_score", "kl_contra")
 itemlist_stance <- as.character(1:1:60)       # Stance phase: 60 points
 itemlist_full_cycle <- as.character(1:1:101)  # Full gait cycle
-
 
 col_head_order_stance<- c(varlist_wide,itemlist_stance)
 col_head_order_full <- c(varlist_wide,itemlist_full_cycle)
@@ -50,7 +49,6 @@ df_sagittal_wide <- df_sagittal %>%
   ungroup()
 
 #ensure correct order of columns
-col_head_order_stance<- c(varlist_wide,itemlist_stance)
 df_frontal_wide <- df_frontal_wide[, col_head_order_stance]
 df_sagittal_wide <- df_sagittal_wide[, col_head_order_full]
 
@@ -61,7 +59,9 @@ df_frontal_wide <- df_frontal_wide %>%
     severity_contra = factor(severity_contra),
     signal_names = factor(signal_names),
     signal_components = factor(signal_components),
-    sex = factor(sex)
+    sex = factor(sex),
+    kl_score = factor(kl_score),
+    kl_contra = factor(kl_score)
   )
 
 df_sagittal_wide <- df_sagittal_wide %>%
@@ -70,7 +70,9 @@ df_sagittal_wide <- df_sagittal_wide %>%
     severity_contra = factor(severity_contra),
     signal_names = factor(signal_names),
     signal_components = factor(signal_components),
-    sex = factor(sex)
+    sex = factor(sex),
+    kl_score = factor(kl_score),
+    kl_contra = factor(kl_score)
   )
 
 ## Principal Component Analysis (Stance phase, frontal and sagittal plane knee angles only)
@@ -85,8 +87,8 @@ df.pca.sagittal <- pca_zscores(df_sagittal_wide, scale = TRUE, rank = 3)
 
 
 # Merge back to get  severity groups
-meta_frontal <- df_frontal %>% dplyr::select(subject, severity, severity_contra) %>% distinct()
-meta_sagittal <- df_sagittal %>% dplyr::select(subject, severity, severity_contra) %>% distinct()
+meta_frontal <- df_frontal_wide %>% dplyr::select(subject, severity, severity_contra, kl_score, kl_contra) %>% distinct()
+meta_sagittal <- df_sagittal_wide %>% dplyr::select(subject, severity, severity_contra, kl_score, kl_contra) %>% distinct()
 
 df_analysis_PC_frontal <- merge(meta_frontal, as.data.frame(df.pca.frontal$zscores))
 df_analysis_PC_sagittal <- merge(meta_sagittal, as.data.frame(df.pca.sagittal$zscores))
@@ -101,6 +103,12 @@ write.fst(df_analysis_PC_sagittal, here('data', 'chkpts', paste0(Sys.Date(), '_s
 summary(df.pca.frontal$pca_list$KNEE_ANGLE_Y)  #Frontal plane
 summary(df.pca.sagittal$pca_list$KNEE_ANGLE_X) #Sagittal
 #summary(df.pca$pca_list$KNEE_ANGLE_Z) # transverse 
+
+# Save summaries to .txt files (reference for analysis -- typically only include PCs with 80% culmulative proportion or more) 
+pca_summary_text_front <- capture.output(summary(df.pca.frontal$pca_list$KNEE_ANGLE_Y))
+writeLines(pca_summary_text_front, "outputs/pca_summary_frontal.txt")
+pca_summary_text_sag <- capture.output(summary(df.pca.sagittal$pca_list$KNEE_ANGLE_X))
+writeLines(pca_summary_text_sag, "outputs/pca_summary_sagittal.txt")
 
 #fviz_eig(df.pca$pca_list$KNEE_ANGLE_X, ncp = 3)
 
@@ -225,7 +233,7 @@ p2_sag_PC1 <- loadingVecs %>%
   scale_x_continuous(expand = c(0, 0))
 loading_vector_plot_sag_PC1 <- p1_sag_PC1 / p2_sag_PC1
 loading_vector_plot_sag_PC1
-ggsave("outputs/loading_vector_plot_front_PC1.png", plot = loading_vector_plot_front_PC1, width = 12, height = 8, dpi = 300)
+ggsave("outputs/loading_vector_plot_sag_PC1.png", plot = loading_vector_plot_front_PC1, width = 12, height = 8, dpi = 300)
 
 
 
@@ -255,17 +263,30 @@ anova_PC1_contra_frontal<-aov(PC1 ~ severity_contra, data =KneeFrontalPlanePC_st
 summary(anova_PC1_contra_frontal)
 TukeyHSD(anova_PC1_contra_frontal)
 anova_tidy_PC1_front <- tidy(anova_PC1_contra_frontal)
-write.csv(anova_tidy_PC1_front, "outputs/PCA_anova_front_PC1.csv", row.names = FALSE)
+write.csv(anova_tidy_PC1_front, "outputs/PCA_anova_sevcontra_front_PC1.csv", row.names = FALSE)
 
 anova_PC1_contra_sag<-aov(PC1 ~ severity_contra, data =KneeSagPlanePC_full)
 summary(anova_PC1_contra_sag)
 TukeyHSD(anova_PC1_contra_sag)
 anova_tidy_PC1_sag <- tidy(anova_PC1_contra_sag)
-write.csv(anova_tidy_PC1_sag, "outputs/PCA_anova_sag_PC1.csv", row.names = FALSE)
+write.csv(anova_tidy_PC1_sag, "outputs/PCA_anova_sevcontra_sag_PC1.csv", row.names = FALSE)
+
+# Statistical Analysis comparing PC1 by kl contra 
+library(broom)
+anova_PC1_kl_contra_frontal<-aov(PC1 ~ kl_contra, data =KneeFrontalPlanePC_stance)
+summary(anova_PC1_kl_contra_frontal)
+TukeyHSD(anova_PC1_kl_contra_frontal)
+anova_tidy_PC1_kl_front <- tidy(anova_PC1_kl_contra_frontal)
+write.csv(anova_tidy_PC1_kl_front, "outputs/PCA_anova_klcontra_front_PC1.csv", row.names = FALSE)
+
+anova_PC1_kl_contra_sag<-aov(PC1 ~ kl_contra, data =KneeSagPlanePC_full)
+summary(anova_PC1_kl_contra_sag)
+TukeyHSD(anova_PC1_kl_contra_sag)
+anova_tidy_PC1_kl_sag <- tidy(anova_PC1_kl_contra_sag)
+write.csv(anova_tidy_PC1_kl_sag, "outputs/PCA_anova_klcontra_sag_PC1.csv", row.names = FALSE)
 
 # Plot PC1 by sex
 boxplot(PC1 ~ sex, data =KneeFrontalPlanePC_stance, main="Stance Only Knee Frontal Plane", xlab = "Sex")
-
 boxplot(PC1 ~ sex, data =KneeSagPlanePC_full, main="Knee Sagittal Plane", xlab = "Sex")
 
 #Summary statistics of PCs by severity_contra groups 
@@ -277,7 +298,7 @@ KneeSagPlanePC_full %>%
   group_by(severity_contra) %>%
   summarise(mean = mean(PC1), SD = sd(PC1), n = n())
 
-# Plot PC2 by KL_contra score
+# Plot PC2 by severity contra score
 boxplot(PC2 ~ severity_contra, data =KneeFrontalPlanePC_stance, xlab = "Contralateral Severity") 
 anova_frontal_PC2<-aov(PC2 ~ severity_contra, data =KneeFrontalPlanePC_stance)
 summary(anova_frontal_PC2)
@@ -320,13 +341,15 @@ summary(anova2)
 TukeyHSD(anova2)
 
 table(KneeFrontalPlanePCAll$knee_oa_location)
-table(KneeFrontalPlanePCAll$severity)
+table(KneeFrontalPlanePCAll$severity_contra)
+table(KneeFrontalPlanePCAll$kl_contra)
 table(interaction(KneeFrontalPlanePCAll$knee_oa_location,KneeFrontalPlanePCAll$severity))
 
 
 table(KneeSagPlanePCAll$knee_oa_location)
-table(KneeSagPlanePCAll$severity)
-table(interaction(KneeSagPlanePCAll$knee_oa_location,KneeSagPlanePCAll$severity))
+table(KneeSagPlanePCAll$severity_contra)
+table(KneeSagPlanePCAll$kl_contra)
+table(interaction(KneeSagPlanePCAll$knee_oa_location,KneeSagPlanePCAll$severity_contra))
 
 ## Further investigate PC1 results 
 

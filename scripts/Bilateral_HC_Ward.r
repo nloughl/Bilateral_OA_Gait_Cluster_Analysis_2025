@@ -7,9 +7,6 @@
 load("data/df_mds_coords.RData")
 load("data/df_mds_result.RData")
 
-#MDS results
-res_mds <- get_clust_tendency(df_mds_result, n = nrow(mds_data)-1, graph = FALSE)
-print(res_mds) 
 
 ### clustering (Using MDS results)
 library(clusterSim)
@@ -20,6 +17,9 @@ library(dplyr)       # For data manipulation
 library(ggplot2)     # For visualization
 library(mclust)      # For ARI
 
+#MDS results
+res_mds <- get_clust_tendency(df_mds_result, n = nrow(mds_data)-1, graph = FALSE)
+print(res_mds) 
 
 # Compute Manhattan distance on MDS results 
 dist_matrix_mds <- dist(df_mds_result, method = "manhattan")
@@ -42,7 +42,7 @@ plot(hc_ward, main = "Dendrogram (Ward's Method)", sub = "", xlab = "", cex = 0.
 
 #Dendrogram to inspect number of clusters 
 # Cut dendrogram into k clusters (can edit number of clusters)
-clusters <- cutree(hc_ward, k = 3)
+clusters <- cutree(hc_ward, k = 2)
 
 # Add clusters to data
 mds_coords$cluster <- factor(clusters)
@@ -404,15 +404,17 @@ write.csv(jaccard_summary_HCPC, "outputs/jaccard_HCPC_with_overall.csv", row.nam
 
 
 ## Cluster Characteristics
+load("data/mds_input_data.RData")
 library(dplyr)
 library(tableone)
 library(pander)
 
-variable_list <- c("age", "PC1_front", "PC1_sag", "speed", "sex", "severity_contra", "oa_location", "signal_side")
-factor_variables <- c("sex", "severity_contra", "oa_location", "signal_side")
-continuous_vars <- c("age", "PC1_front", "PC1_sag", "speed")
+# Edit based on PCA results (only PC with >= 0.8 Culm Var proportion are included)
+variable_list <- c("age", "PC1_front", "PC1_sag", "PC2_sag", "PC3_sag", "speed", "sex", "severity_contra", "oa_location", "signal_side", "kl_contra")
+factor_variables <- c("sex", "severity_contra", "kl_contra", "oa_location", "signal_side")
+continuous_vars <- c("age", "PC1_front", "PC1_sag", "PC2_sag", "PC3_sag", "speed")
  
-dat_clust_tables <- combined_data %>%
+dat_clust_tables <- mds_input_data %>%
   left_join(mds_coords[, c("subject", "final_clusters")], join_by("subject"))
 dat_clust_tables <- dat_clust_tables %>%
   left_join(
@@ -420,9 +422,10 @@ dat_clust_tables <- dat_clust_tables %>%
       group_by(subject) %>%
       summarise(
         oa_location = first(oa_location),
-        severity_contra = first(severity_contra)
+        severity_contra = first(severity_contra),
+        kl_contra = first(kl_contra)
       ) %>%
-      dplyr::select(subject, oa_location, severity_contra), 
+      dplyr::select(subject, oa_location, severity_contra, kl_contra), 
     by = "subject"
     
     )
@@ -460,7 +463,13 @@ pandoc_table <- pandoc.table(tab1_matrix,
 #convert to .csv for report 
 write.csv(tab1_matrix, file = "outputs/HCPC_cluster_summaries.csv")
 
-
+# Check how many subjects are missing KL grades
+print(sum(is.na(dat_clust_tables$kl_contra)))
+dat_clust_tables %>%
+  filter(is.na(kl_contra)) %>%
+  distinct(subject, final_clusters) %>%
+  group_by(final_clusters) %>%
+  summarise(n_missing = n())
 
 ## Statistical tests on Clusters
 library(broom)
@@ -533,10 +542,13 @@ test_continuous_var <- function(data, variable, cluster_col = "final_clusters", 
   }
 }
 
+# Edit for PCs included 
 test_continuous_var(dat_clust_tables, "age", file_prefix = "HCPC_Age")
 test_continuous_var(dat_clust_tables, "speed", file_prefix = "HCPC_Speed")
 test_continuous_var(dat_clust_tables, "PC1_front", file_prefix = "HCPC_PC1Front")
 test_continuous_var(dat_clust_tables, "PC1_sag", file_prefix = "HCPC_PC1Sag")
+test_continuous_var(dat_clust_tables, "PC2_sag", file_prefix = "HCPC_PC2Sag")
+test_continuous_var(dat_clust_tables, "PC3_sag", file_prefix = "HCPC_PC3Sag")
 
 
 # Categorical Variables
@@ -701,3 +713,6 @@ plot_WFbyClust_with_controls <- dat_clust_healthy %>%
 print(plot_WFbyClust_with_controls)
 ggsave("outputs/HC_WFbyClust_with_controls_plot.png", plot = plot_WFbyClust_with_controls, width = 8, height = 6, dpi = 300)
 
+# Convert R script to markdown (.Rmd) 
+library(knitr)
+knitr::spin("scripts/Bilateral_HC_Ward.r", knit = TRUE)

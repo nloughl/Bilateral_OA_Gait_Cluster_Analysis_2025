@@ -33,12 +33,12 @@ colnames(sagittal_pca_results)  # Should include PC1_sag, PC2_sag, PC3_sag
 
 # Get Demographic data (age and sex)
 demographic_data <- df_combined %>%
-  dplyr::select(subject, sex, age, speed, oa_location) %>%
+  dplyr::select(subject, sex, age, speed) %>%
   group_by(subject) %>%
   summarise(
     age = first(age),       # Keep first occurrence (all are the same)
-    sex = first(sex),       # Keep first occurrence
-    speed = first(speed),       # Keep first occurrence
+    sex = first(sex),       
+    speed = first(speed)
   ) %>%
   ungroup()
 
@@ -49,19 +49,41 @@ sagittal_data <- sagittal_pca_results %>%
   dplyr::select(subject, signal_side, PC1_sag, PC2_sag, PC3_sag)
 
 # Merge dfs to inlcude frontal and sag plane PCs and walking speed and demographics 
-combined_data <- frontal_data %>%
+mds_combined_data <- frontal_data %>%
   left_join(sagittal_data, by = c("subject", "signal_side")) %>%
   inner_join(demographic_data, by = c("subject"))
 
 # Verify dimensions 
-dim(combined_data)  # Should be ~179
-colnames(combined_data)  # Should include PC1_front, PC2_front, PC1_sag, PC2_sag, speed, age, sex etc.
+dim(mds_combined_data)  # Should be ~179
+colnames(mds_combined_data)  # Should include PC1_front, PC2_front, PC1_sag, PC2_sag, speed, age, sex etc.
+
+# Identify PCS with >=80% culmulative proportion to include for analysis 
+lines <- readLines("outputs/pca_summary_frontal.txt")
+cumulative_line <- grep("Cumulative Proportion", lines, value = TRUE)
+cum_props <- as.numeric(stringr::str_extract_all(cumulative_line, "\\d+\\.\\d+", simplify = TRUE))
+num_pcs_to_keep <- which(cum_props >= 0.8)[1]
+front_pcs <- paste0("PC", 1:num_pcs_to_keep, "_front")
+print(front_pcs)
+
+lines_sag <- readLines("outputs/pca_summary_sagittal.txt")
+cumulative_line_sag <- grep("Cumulative Proportion", lines_sag, value = TRUE)
+cum_props_sag <- as.numeric(stringr::str_extract_all(cumulative_line_sag, "\\d+\\.\\d+", simplify = TRUE))
+num_pcs_to_keep_sag <- which(cum_props_sag >= 0.8)[1]
+sag_pcs <- paste0("PC", 1:num_pcs_to_keep_sag, "_sag")
+print(sag_pcs)
 
 # Select numeric variables for MDS
-mds_data <- combined_data %>%
-  dplyr::select(PC1_front, PC2_front, PC1_sag, PC2_sag, speed, age) %>%
+mds_data <- mds_combined_data %>%
+  dplyr::select(all_of(c(front_pcs, sag_pcs, "speed", "age"))) %>%
   scale() %>%  # Standardize
-  as.data.frame()
+  as.data.frame() 
+
+# Save mds input data with subject info 
+mds_input_data <- mds_combined_data %>%
+  dplyr::select(all_of(c(front_pcs, sag_pcs, "speed", "age"))) %>%
+  mutate(subject = mds_combined_data$subject[complete.cases(mds_data)],
+         signal_side = mds_combined_data$signal_side[complete.cases(mds_data)])
+save(mds_input_data, file="data/mds_input_data.Rdata")
 
 # # Handle any NAs (if any)
 # mds_data <- na.omit(mds_data)
@@ -79,8 +101,8 @@ save(df_mds_result, file="data/df_mds_result.RData")
 # Create data frame with MDS coordinates
 mds_coords <- as.data.frame(mds_result$points) %>%
   rename(Dim1 = V1, Dim2 = V2) %>%
-  mutate(subject = combined_data$subject[complete.cases(mds_data)],
-         signal_side = combined_data$signal_side[complete.cases(mds_data)])
+  mutate(subject = mds_combined_data$subject[complete.cases(mds_data)],
+         signal_side = mds_combined_data$signal_side[complete.cases(mds_data)])
 
 # Add other subject id and sex for context
 mds_coords <- mds_coords %>%
@@ -102,6 +124,7 @@ sev_data <- df_combined %>%
   group_by(subject, signal_side) %>%
   summarise(
     severity_contra = first(severity_contra),  # Take first if consistent
+    kl_contra = first(kl_contra),
     .groups = "drop"
   )
 
@@ -115,6 +138,12 @@ dim(mds_sev)  # Should match dim(mds_coords), 179 subjects
 colnames(mds_sev)
 
 ggplot(mds_sev, aes(x = Dim1, y = Dim2, color = factor(severity_contra))) +
+  geom_point(size = 2) +
+  labs(title = "MDS with Manhattan Distance", x = "Dimension 1", y = "Dimension 2") +
+  theme_minimal()
+
+# Colour by kl_contra
+ggplot(mds_sev, aes(x = Dim1, y = Dim2, color = kl_contra)) +
   geom_point(size = 2) +
   labs(title = "MDS with Manhattan Distance", x = "Dimension 1", y = "Dimension 2") +
   theme_minimal()

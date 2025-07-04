@@ -1,5 +1,5 @@
 ---
-title: "Bilateral PAM, KAMILA, PAM-MS Clustering Using MDS Coordinates"
+title: "Bilateral PAM, KAMILA, PAM-MS Clustering with MDS"
 author: "Naomi Loughiln"
 date: "2025-06-28"
 output: html_document
@@ -10,14 +10,13 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 # Mixed data types clustering
-```{r, echo = FALSE, include = FALSE} 
+```{r, echo = FALSE} 
 library(dplyr)
 library(cluster)
 library(factoextra)
 library(fpc)
 library(kamila)
 library(mclust)
-library(aricode)
 
 ## Load data 
 load("data/df_2023_2025_combined.RData") # raw data fro sample -- used for demographics/cat variables 
@@ -80,60 +79,6 @@ catVars <- Data.Cluster %>%
 str(conVars)  # Should be numeric
 str(catVars)  # Should be factors
 ```
-# Outlier detection 
-
-Clustering is sensitive to outliers, so we preemptively check for outliers before attempting clustering. Outliers can result in poor silhouette width or ARI, making it difficult to identify the optimal number of clusters to use. 
-
-```{r}
-# Outlier detection function
-IsOutlier <- function(x) {
-  outlier <- (x < quantile(x, 0.25, na.rm = TRUE) - 3 * IQR(x, na.rm = TRUE)) |
-             (x > quantile(x, 0.75, na.rm = TRUE) + 3 * IQR(x, na.rm = TRUE))
-  as.numeric(outlier)
-}
-
-# Identify outliers for continuous variables
-for (i in names(conVars)) {
-  Data.Cluster[[paste0("Outlier_", i)]] <- IsOutlier(Data.Cluster[[i]])
-}
-
-# Create Exclude column
-Data.Cluster$Exclude <- rowSums(Data.Cluster[, grepl("Outlier", names(Data.Cluster))], na.rm = TRUE)
-
-# Check for outliers
-has_outliers <- any(Data.Cluster$Exclude != 0)
-cat("Does this data set have outliers?", has_outliers, "\n")
-```
-
-## Remove outliers (if any) 
-
-```{r}
-if (has_outliers) {
-  # Separate outliers
-  outliers <- Data.Cluster[Data.Cluster$Exclude != 0, ]
-  Data.Cluster.NoOutliers <- Data.Cluster[Data.Cluster$Exclude == 0, ]
-
-  # Create conVars and catVars
-  conVars.NoOutliers <- Data.Cluster.NoOutliers %>%
-    dplyr::select(Dim1, Dim2) %>%
-    mutate(across(everything(), as.numeric)) %>%
-    scale() %>%
-    as.data.frame()
-  
-  catVars.NoOutliers <- Data.Cluster.NoOutliers %>%
-    dplyr::select(sex, severity_contra, knee_oa_location) %>%
-    mutate(across(everything(), as.factor))
-  
-  # Store results
-  cat("Outliers detected. The following rows were removed:", print(outliers), "\n")
-  Data.Cluster <- Data.Cluster.NoOutliers  # Update Data.Cluster for downstream use
-  cat("Cleaned dataset prepared:", nrow(Data.Cluster), "\n")
-  conVars <- conVars.NoOutliers
-  catVars <- catVars.NoOutliers
-} else {
-  cat("No outliers detected. Proceed with original dataset.\n")
-}
-```
 
 # Determine optimal number of clusters 
 ## Method 1
@@ -160,7 +105,7 @@ print(pred_strength)
 
 ## Method 2: Sub-sampling 
 
-```{r, echo = FALSE}
+```{r}
 # Define L1 (Manhattan) and matching distances
 L1Dist <- function(v1, v2) sum(abs(v1 - v2))
 matchingDist <- function(v1, v2) sum(as.integer(v1) != as.integer(v2))
@@ -199,6 +144,9 @@ sil_results_kam <- matrix(NA, nrow = n_iterations, ncol = length(k_range))
 ami_results_pam <- matrix(NA, nrow = n_iterations, ncol = length(k_range))
 ami_results_ms  <- matrix(NA, nrow = n_iterations, ncol = length(k_range))
 ami_results_kam <- matrix(NA, nrow = n_iterations, ncol = length(k_range))
+ari_results_pam_aricode <- matrix(NA, nrow = n_iterations, ncol = length(k_range))
+ari_results_ms_aricode  <- matrix(NA, nrow = n_iterations, ncol = length(k_range))
+ari_results_kam_aricode  <- matrix(NA, nrow = n_iterations, ncol = length(k_range))
 
 # Cluster full dataset for PAM, KAMILA, and Modha-Spangler
 full_clusters_pam <- list()
@@ -255,6 +203,7 @@ for (i in 1:n_iterations) {
     pam_sub_clusters <- pam_sub_result$clustering
     full_clusters_sub_pam <- full_clusters_pam[[j]][sample_idx]
     ari_results_pam[i, j] <- adjustedRandIndex(full_clusters_sub_pam, pam_sub_clusters)
+    ari_results_pam_aricode[i, j] <- ARI(full_clusters_sub_pam, pam_sub_clusters)
     ami_results_pam[i, j] <- AMI(full_clusters_sub_pam, pam_sub_clusters)
 
     diss_mat <- daisy(sampled_data[, c(continuous_features, categorical_features)], metric = "gower")
@@ -271,6 +220,7 @@ for (i in 1:n_iterations) {
     kamila_sub_clusters <- kamila_sub_result$finalMemb
     full_clusters_sub_kamila <- full_clusters_kam[[j]][sample_idx]
     ari_results_kam[i, j] <- adjustedRandIndex(full_clusters_sub_kamila, kamila_sub_clusters)
+    ari_results_kam_aricode[i, j] <- ARI(full_clusters_sub_kamila, kamila_sub_clusters)
     ami_results_kam[i, j] <- AMI(full_clusters_sub_kamila, kamila_sub_clusters)
     
     diss_mat <- daisy(sampled_data[, c(continuous_features, categorical_features)], metric = "gower")
@@ -296,6 +246,7 @@ for (i in 1:n_iterations) {
     ms_sub_clusters <- ms_sub_result$results$cluster
     full_clusters_sub_ms <- full_clusters_ms[[j]][sample_idx]
     ari_results_ms[i, j] <- adjustedRandIndex(full_clusters_sub_ms, ms_sub_clusters)
+    ari_results_ms_aricode[i, j] <- ARI(full_clusters_sub_ms, ms_sub_clusters)
     ami_results_ms[i, j] <- AMI(full_clusters_sub_ms, ms_sub_clusters)
 
     
@@ -310,21 +261,24 @@ for (i in 1:n_iterations) {
 ari_sil_ami_summary <- data.frame(
   k = k_range,
   mean_ari_pam = colMeans(ari_results_pam, na.rm = TRUE),
+  mean_ari_pam_aricode = colMeans(ari_results_pam_aricode, na.rm = TRUE),
   mean_sil_pam = colMeans(sil_results_pam, na.rm = TRUE),
   mean_ami_pam = colMeans(ami_results_pam, na.rm = TRUE),
   mean_ari_ms = colMeans(ari_results_ms, na.rm = TRUE),
+  mean_ari_ms_aricode = colMeans(ari_results_ms_aricode, na.rm = TRUE),
   mean_sil_ms = colMeans(sil_results_ms, na.rm = TRUE),
   mean_ami_ms = colMeans(ami_results_ms, na.rm = TRUE),
   mean_ari_kam = colMeans(ari_results_kam, na.rm = TRUE),
+  mean_ari_kam_aricode = colMeans(ari_results_kam_aricode, na.rm = TRUE),
   mean_sil_kam = colMeans(sil_results_kam, na.rm = TRUE),
   mean_ami_kam = colMeans(ami_results_kam, na.rm = TRUE)
 )
 
 stability_df <- data.frame(
   Method = c("PAM", "KAMILA", "MS-PAM"),
-  Mean_ARI = c(mean(ari_results_pam), mean(ari_results_kam), mean(ari_results_ms)),
+  Mean_ARI = c(mean(ari_results_pam_aricode), mean(ari_results_kam_aricode), mean(ari_results_ms_aricode)),
   Mean_AMI = c(mean(ami_results_pam), mean(ami_results_kam), mean(ami_results_ms)),
-  SD_ARI = c(sd(ari_results_pam), sd(ari_results_kam), sd(ari_results_ms)),
+  SD_ARI = c(sd(ari_results_pam_aricode), sd(ari_results_kam_aricode), sd(ari_results_ms_aricode)),
   SD_AMI = c(sd(ami_results_pam), sd(ami_results_kam), sd(ami_results_ms))
 )
 
@@ -340,10 +294,6 @@ combined_score_ms <- ari_sil_ami_summary$mean_ari_ms + ari_sil_ami_summary$mean_
 optimal_k_idx_ms <- which.max(combined_score_ms)
 numclust_ms <- k_range[optimal_k_idx_ms]
 
-combined_score_kam <- ari_sil_ami_summary$mean_ari_kam + ari_sil_ami_summary$mean_sil_kam 
-optimal_k_idx_kam <- which.max(combined_score_kam)
-numclust_kam <- k_range[optimal_k_idx_kam]
-
 cat("\nSelected k with highest combined mean ARI and silhouette for PAM:", numclust_pam, "\n")
 cat("Mean ARI for selected k:", round(ari_sil_ami_summary$mean_ari_pam[optimal_k_idx_pam], 3), "\n")
 cat("Mean Silhouette for selected k:", round(ari_sil_ami_summary$mean_sil_pam[optimal_k_idx_pam], 3), "\n")
@@ -352,6 +302,9 @@ cat("\nSelected k with highest combined mean ARI and silhouette for MS:", numclu
 cat("Mean ARI for selected k:", round(ari_sil_ami_summary$mean_ari_ms[optimal_k_idx_ms], 3), "\n")
 cat("Mean Silhouette for selected k:", round(ari_sil_ami_summary$mean_sil_ms[optimal_k_idx_ms], 3), "\n")
 
+numclust_pam = ari_sil_ami_summary$k[which.max(ari_sil_ami_summary$mean_ari_pam)]
+numclust_kamila = ari_sil_ami_summary$k[which.max(ari_sil_ami_summary$mean_ari_kamila)]
+numclust_ms = ari_sil_ami_summary$k[which.max(ari_sil_ami_summary$mean_ari_ms)]
 
 # Plot AMI and ARI
 library(ggplot2)
@@ -381,15 +334,13 @@ ms_fit <- gmsClust(conData = conVars, catData = catVars, nclust = numclust_ms,
 
 ## KAMILA
 
-KAMILA will choose the optimal cluster number from 2:10 based on prediction strength and will choose the smallest k with prediction strength over the threshold
-
 ```{r}
 conVar <- as.data.frame(conVars)
 catFactor <- as.data.frame(catVars)
 #Data.Cluster <- Data.Cluster %>% ungroup()
 kam_fit <- kamila(conVar, catFactor, numClust = 2:10, numInit = 50, maxIter = 50,
                   calcNumClust = "ps", predStrThresh = PredictionThreshold)
-numclust_kamila <- length(unique(kam_fit$finalMemb))
+    #KAM will choose optimal cluster number from 2:10 based on prediction strength and will choose the smallest k with prediction strength over the threshold
 ```
 
 # Add cluster labels to data
@@ -402,279 +353,310 @@ Data.Cluster$KAMcluster <- kam_fit$finalMemb
 
 # Evaluate Cluster Stability 
 
-```{r, echo= FALSE, include = FALSE}
+```{r, echo= FALSE}
 library(fpc)
 ```
 
-## Compute Adjusted Rand Index 
-
-Evaluate cluster agreement across methods 
-
+## Compute Adjusted Rand Index -- for cluster aggreement 
 ```{r}
 RAND_PAM_MS <- adjustedRandIndex(Data.Cluster$PAMcluster, Data.Cluster$MScluster)
 RAND_PAM_KAM <- adjustedRandIndex(Data.Cluster$PAMcluster, Data.Cluster$KAMcluster)
 RAND_KAM_MS <- adjustedRandIndex(Data.Cluster$MScluster, Data.Cluster$KAMcluster)
 cluster_agreement <- data.frame(RAND_PAM_MS, RAND_PAM_KAM, RAND_KAM_MS)
-print(cluster_agreement)
 write.csv(cluster_agreement, "outputs/mixed_results_mds/mixed_data_cluster_agreement.csv", row.names = FALSE)
 
 ```
 
 # Compute Jaccard stability 
 
-The cboot() function for cluster stability does not support KAMILA or PAM-MS, so a custom function using sub-sampling to evaluate cluster stability is used. However, cboot() is also used for PAM for comparison -- both cboot() and the custom function produce similar results. 
-
-The function repeatedly (B times) draws random subsamples from the dataset (without replacement), clusters the subsample using the appropriate clustering function, and compares the resulting clusters to those obtained from clustering the full dataset. For each cluster, it calculates the Jaccard index between the true cluster labels (from the full data, restricted to the subsample) and the predicted clusters (from the subsample clustering), after aligning them using optimal matching. The result is a Jaccard similarity matrix that measures how consistently each cluster is recovered across subsamples. The mean Jaccard score per cluster is used as a measure of cluster stability.
-
-```{r}
-# Define parameters
-perc <- 0.7
-s = 123
-B = 100
-```
-
 ## PAM 
-
-```{r, echo = FALSE, include}
-library(fpc)
-
-cboot_pam <- clusterboot(
-  gower_mat,
-  clustermethod = claraCBI,
-  k = numclust_pam,
-  distances = TRUE,
-  bootmethod = "subset", 
-  subtuning = nrow(Data.Cluster)*perc,
-  B = B,
-  seed = s,
-  count = FALSE
-)
-
-jaccard <- cboot_pam$subsetmean # mean Jaccard per cluster
-dissolved <- cboot_pam$subsetbrd
-recovered <- cboot_pam$subsetrecover  
-
-mean(cboot_pam$subsetmean)  # clusterwise Jaccard mean
-
-# Summary
-pam_df <- data.frame(
-  Method = "PAM",
-  Cluster = 1:length(jaccard),
-  Mean_Jaccard_per_cluster = jaccard
-)
-print("PAM cboot() results")
-print(pam_df)
-```
-
 ```{r}
-k <- numclust_pam
+# Functions to calculate stability, e.g., Jaccard Index for each cluster
+jaccard_index_cluster <- function(cluster1, cluster2, cluster_id) {
+  # Identify points that belong to the specific cluster
+  cluster1_points <- which(cluster1 == cluster_id)
+  cluster2_points <- which(cluster2 == cluster_id)
+  
+  # Calculate Jaccard index for the specific cluster
+  intersect_len <- length(intersect(cluster1_points, cluster2_points))
+  union_len <- length(union(cluster1_points, cluster2_points))
+  
+  # Return the Jaccard index for this cluster
+  return(intersect_len / union_len)
+}
 
-bootstrap_pam_subset <- function(conData, catData, k, B = 100, conWeight = 0.5, subsample_frac = 0.8) {
-  n <- nrow(conData)
-  jaccard_matrix_pam <- matrix(NA, nrow = B, ncol = k)
+## calculate jaccard index between full clusters 
+jaccard_index_overall <- function(clustering1, clustering2) {
+  ids1 <- unique(clustering1)
+  ids2 <- unique(clustering2)
+  matched <- 0
+  total <- length(clustering1)
+  for (i in 1:total) {
+    if (clustering1[i] == clustering2[i]) matched <- matched + 1
+  }
+  return(matched / total)
+}
 
-  original_clusters <- Data.Cluster$PAMcluster
-
+# function for bootstrap resampling and clustering
+bootstrap_pam <- function(conData, catData, k, B = 100) {
+  # Store cluster results
+  cluster_results <- list()
+  
+  # Initialize empty matrix for Jaccard stability for each cluster
+  cluster_stability <- matrix(0, nrow = B, ncol = k)  # B bootstrap samples, k clusters
+  
   for (i in 1:B) {
-    # Subsample indices and data
-    subsample_idx <- sample(1:n, size = floor(n * subsample_frac), replace = FALSE)
-    subsample_con <- conData[subsample_idx, ]
-    subsample_cat <- catData[subsample_idx, ]
-
-    # Cluster the subsample
-    gower_dist <- daisy(cbind(subsample_con, subsample_cat), metric = "gower")
-    pam_fit <- pam(gower_dist, k = k, diss = TRUE)
+    # Bootstrap resample (with replacement)
+    sample_data_con <- conData[sample(1:nrow(conData), replace = TRUE), ]
+    sample_data_cat <- catData[sample(1:nrow(catData), replace = TRUE), ]
     
-    subsample_clusters <- pam_fit$clustering
-    true_labels <- original_clusters[subsample_idx]
+    # Create the distance matrix for PAM
+    distMat <- daisy(x = cbind(sample_data_con, sample_data_cat), metric = "gower")
     
-    # Match clusters using contingency table
-    contingency <- table(true_labels, subsample_clusters)
-    if (all(dim(contingency) >= 1)) {
-      matched <- clue::solve_LSAP(contingency, maximum = TRUE)
-
-      for (j in 1:k) {
-        true_cluster <- which(true_labels == j)
-        matched_cluster <- which(subsample_clusters == matched[j])
-
-        if (length(true_cluster) > 0 && length(matched_cluster) > 0) {
-          intersect_size <- length(intersect(true_cluster, matched_cluster))
-          union_size <- length(union(true_cluster, matched_cluster))
-          jaccard_matrix_pam[i, j] <- intersect_size / union_size
-        }
+    # Run PAM with the specified k
+    pam_fit <- pam(distMat, k = k, diss = TRUE)
+    
+    # Store the clustering results
+    cluster_results[[i]] <- pam_fit$clustering
+    
+    # Calculate the stability for each cluster in this bootstrap sample
+    if (i > 1) {
+      for (cluster_id in 1:k) {
+        cluster_stability[i, cluster_id] <- jaccard_index_cluster(cluster_results[[1]], pam_fit$clustering, cluster_id)
       }
     }
   }
-
-  return(jaccard_matrix_pam)
+  
+  # Return the stability for each cluster across bootstrap samples
+  return(list(
+    stability = cluster_stability,
+    clusterings = cluster_results
+  ))
 }
-
-# Run and compute mean Jaccard per cluster
-jaccard_matrix_pam <- bootstrap_pam_subset(conVars, catVars, k = k, B = B, conWeight = 0.5, subsample_frac = perc)
-mean_jaccard_pam <- colMeans(jaccard_matrix_pam, na.rm = TRUE)
-
-# Format as data frame
-pam2_df <- data.frame(
-  Method = "PAM",
-  Cluster = 1:k,
-  Mean_Jaccard_per_cluster = mean_jaccard_pam
-)
-print("Custom stability function output")
-print(pam2_df)
 ```
 
+### Run for PAM (with k = 2 (numclust_pam))
+
+```{r}
+pam_bootstrap_result <- bootstrap_pam(conVars, catVars, k = numclust_pam, B = 100)
+cluster_stability_pam <- pam_bootstrap_result$stability
+cluster_results_pam <- pam_bootstrap_result$clusterings
+
+mean_stability_per_cluster <- colMeans(cluster_stability_pam, na.rm = TRUE)
+
+# Calculate summary stats
+jaccard_summary_pam <- data.frame(
+  Cluster = 1:ncol(cluster_stability_pam),
+  Mean_Jaccard = mean_stability_per_cluster,
+  SD_Jaccard = apply(cluster_stability_pam, 2, sd, na.rm = TRUE)
+)
+
+# Compare results across bootstrap samples
+jaccard_vals_pam <- sapply(1:(length(cluster_results_pam) - 1), function(i) {
+  jaccard_index_global(cluster_results_pam[[i]], cluster_results_pam[[i + 1]])
+})
+overall_mean_jaccard_pam <- mean(jaccard_vals_pam)
+print(overall_mean_jaccard_pam)
+
+
+jaccard_summary_pam_extended <- rbind(
+  jaccard_summary_pam,
+  data.frame(
+    Cluster = "Overall_Mean",
+    Mean_Jaccard = overall_mean_jaccard_pam,
+    SD_Jaccard = NA  # You can leave SD blank or compute it if needed
+  )
+)
+# Save to CSV
+write.csv(jaccard_summary_pam_extended, "outputs/mixed_results_mds/jaccard_PAM_with_overall.csv", row.names = FALSE)
+```
 
 ## KAMILA
 
 ```{r}
-library(clue)    # For cluster matching
-library(kamila) 
+library(clue)  # for cluster matching (Hungarian algorithm)
 
-k <- numclust_kamila
+# parameters
+B <- 100  # number of bootstrap iterations
+k <- length(unique(Data.Cluster$KAMcluster))    # number of clusters
+set.seed(123)
 
-bootstrap_kam_subset <- function(conData, catData, k, B = 100, conWeight = 0.5, subsample_frac = 0.8) {
-  n <- nrow(conData)
-  jaccard_matrix_kam <- matrix(NA, nrow = B, ncol = k)
+# Store original clustering 
+kam_orig <- kamila(conVar, catFactor, numClust = k, numInit = 10, maxIter = 50)
+orig_clusters <- kam_orig$finalMemb
+n <- nrow(conVar)
 
-  original_clusters <- Data.Cluster$KAMcluster
+# Initialize Jaccard matrix 
+jaccard_matrix <- matrix(NA, nrow = B, ncol = k)
+kam_clusterings <- vector("list", B)  # stores bootstrap clusterings
 
-  for (i in 1:B) {
-    # Subsample indices and data
-    subsample_idx <- sample(1:n, size = floor(n * subsample_frac), replace = FALSE)
-    subsample_con <- conData[subsample_idx, ]
-    subsample_cat <- catData[subsample_idx, ]
-
-    # Cluster the subsample
-    conVar <- as.data.frame(subsample_con)
-    catFactor <- as.data.frame(subsample_cat)
-    kam_fit <- kamila(conVar, catFactor, numClust = k, numInit = 50, maxIter = 50)
-    subsample_clusters <- kam_fit$finalMemb
-    true_labels <- original_clusters[subsample_idx]
-    
-    # Match clusters using contingency table
-    contingency <- table(true_labels, subsample_clusters)
-    if (all(dim(contingency) >= 1)) {
-      matched <- clue::solve_LSAP(contingency, maximum = TRUE)
-
-      for (j in 1:k) {
-        true_cluster <- which(true_labels == j)
-        matched_cluster <- which(subsample_clusters == matched[j])
-
-        if (length(true_cluster) > 0 && length(matched_cluster) > 0) {
-          intersect_size <- length(intersect(true_cluster, matched_cluster))
-          union_size <- length(union(true_cluster, matched_cluster))
-          jaccard_matrix_kam[i, j] <- intersect_size / union_size
-        }
-      }
-    }
+# Bootstrap Loop 
+for (b in 1:B) {
+  # Resample indices
+  boot_indices <- sample(1:n, replace = TRUE)
+  oob_indices <- setdiff(1:n, boot_indices)  # optional: out-of-bag points
+  
+  # Bootstrap sample
+  boot_con <- conVar[boot_indices, ]
+  boot_cat <- catFactor[boot_indices, ]
+  
+  # Run KAMILA on bootstrap sample
+  kam_boot <- kamila(boot_con, boot_cat, numClust = k, numInit = 10, maxIter = 50)
+  boot_clusters <- kam_boot$finalMemb
+  kam_clusterings[[b]] <- boot_clusters  # store current clustering
+  
+  # Get cluster labels for only the bootstrapped rows in original data
+  true_labels <- orig_clusters[boot_indices]
+  
+  # Compute contingency table
+  contingency <- table(true_labels, boot_clusters)
+  
+  # Match clusters using Hungarian algorithm
+  matched <- clue::solve_LSAP(contingency, maximum = TRUE)
+  
+  # Compute Jaccard index for each cluster
+  for (i in 1:k) {
+    orig_members <- which(true_labels == i)
+    boot_members <- which(boot_clusters == matched[i])
+    intersect_size <- length(intersect(orig_members, boot_members))
+    union_size <- length(union(orig_members, boot_members))
+    jaccard_matrix[b, i] <- intersect_size / union_size
   }
-
-  return(jaccard_matrix_kam)
 }
 
-# Run and compute mean Jaccard per cluster
-jaccard_matrix_kam <- bootstrap_kam_subset(conVars, catVars, k = k, B = B, conWeight = 0.5, subsample_frac = perc)
-mean_jaccard_kam <- colMeans(jaccard_matrix_kam, na.rm = TRUE)
-
-# Format as data frame
-kamila_df <- data.frame(
-  Method = "KAMILA",
+# Summary statistics
+colnames(jaccard_matrix) <- paste0("Cluster_", 1:k)
+jaccard_summary <- data.frame(
   Cluster = 1:k,
-  Mean_Jaccard_per_cluster = mean_jaccard_kam
+  Mean_Jaccard = colMeans(jaccard_matrix, na.rm = TRUE),
+  SD_Jaccard = apply(jaccard_matrix, 2, sd, na.rm = TRUE)
 )
 
-print(kamila_df)
-```
+print(jaccard_summary) # measures how consistently the same points are grouped together (cluster stability) -- irrespective of cluster label 
 
-## PAM-MS Cluster Stability 
-
-```{r}
-k <- numclust_ms
-
-bootstrap_ms_pam_subset <- function(conData, catData, k, B = 100, conWeight = 0.5, subsample_frac = 0.8) {
-  n <- nrow(conData)
-  jaccard_matrix_ms <- matrix(NA, nrow = B, ncol = k)
-
-  original_clusters <- Data.Cluster$MScluster
-
-  for (i in 1:B) {
-    # Subsample indices and data
-    subsample_idx <- sample(1:n, size = floor(n * subsample_frac), replace = FALSE)
-    subsample_con <- conData[subsample_idx, ]
-    subsample_cat <- catData[subsample_idx, ]
-
-    # Cluster the subsample
-    ms_fit <- gmsClust(conData = subsample_con, catData = subsample_cat, nclust = k,
-                   clustFun = pammix, conDist = L1Dist, catDist = matchingDist)
-    subsample_clusters <- ms_fit$results$cluster
-    true_labels <- original_clusters[subsample_idx]
-
-    # Match clusters using contingency table
-    contingency <- table(true_labels, subsample_clusters)
-    if (all(dim(contingency) >= 1)) {
-      matched <- clue::solve_LSAP(contingency, maximum = TRUE)
-
-      for (j in 1:k) {
-        true_cluster <- which(true_labels == j)
-        matched_cluster <- which(subsample_clusters == matched[j])
-
-        if (length(true_cluster) > 0 && length(matched_cluster) > 0) {
-          intersect_size <- length(intersect(true_cluster, matched_cluster))
-          union_size <- length(union(true_cluster, matched_cluster))
-          jaccard_matrix_ms[i, j] <- intersect_size / union_size
-        }
-      }
-    }
-  }
-
-  return(jaccard_matrix_ms)
+# Function to compute Jaccard index between two clusterings
+jaccard_index <- function(cl1, cl2) {
+  n <- length(cl1)
+  agree_matrix1 <- outer(cl1, cl1, FUN = "==")
+  agree_matrix2 <- outer(cl2, cl2, FUN = "==")
+  intersection <- sum(agree_matrix1 & agree_matrix2) - n  # remove diagonal
+  union <- sum(agree_matrix1 | agree_matrix2) - n
+  return(intersection / union)
 }
 
-# Run and compute mean Jaccard per cluster
-jaccard_matrix_ms <- bootstrap_ms_pam_subset(conVars, catVars, k = k, B = B, conWeight = 0.5, subsample_frac = perc)
-mean_jaccard_ms <- colMeans(jaccard_matrix_ms, na.rm = TRUE)
+# Calculate pairwise Jaccard indices between consecutive clusterings
+jaccard_vals_kam <- sapply(1:(B - 1), function(i) {
+  jaccard_index(kam_clusterings[[i]], kam_clusterings[[i + 1]])
+})
 
-# Format as data frame
-ms_df <- data.frame(
-  Method = "PAM-MS",
-  Cluster = 1:k,
-  Mean_Jaccard_per_cluster = mean_jaccard_ms
-)
+# Compute overall mean
+overall_mean_jaccard_kam <- mean(jaccard_vals_kam, na.rm = TRUE)
 
-print(ms_df)
-```
-
-## Compare Cluster Stability Across Clustering Methods 
-
-```{r, echo = FALSE}
-# Clusterwise 
-jaccard_clusterwise_all <- rbind(pam2_df, kamila_df, ms_df)
-
-# Overall 
-overall_stability_df <- data.frame(
-  Method = c("PAM", "KAMILA", "PAM-MS"),
-  Cluster = "Overall",
-  Mean_Jaccard_per_cluster = c(
-    mean(mean_jaccard_pam),
-    mean(mean_jaccard_kam),
-    mean(mean_jaccard_ms)
+jaccard_summary_extended <- rbind(
+  jaccard_summary,
+  data.frame(
+    Cluster = "Overall_Mean",
+    Mean_Jaccard = overall_mean_jaccard_kam,
+    SD_Jaccard = NA
   )
 )
 
-jaccard_summary_all <- rbind(jaccard_clusterwise_all, overall_stability_df)
-print(jaccard_summary_all)
-
+# Save
+write.csv(jaccard_summary_extended, "outputs/mixed_results_mds/jaccard_KAM_with_overall.csv", row.names = FALSE)
 ```
 
-## Compare Jaccard index between methods
-Do the same points stay together, and are the clusters labelled the same across runs? 
+## PAM-MS CLuster Stability 
 
 ```{r}
-ggplot(overall_stability_df, aes(x = Method, y = Mean_Jaccard_per_cluster)) +
+bootstrap_ms_pam <- function(conData, catData, k=numclust_pam, B = 100, conWeight = 0.5) {
+  # Store cluster results
+  cluster_results <- list()
+  
+  # Initialize empty matrix for Jaccard stability for each cluster
+  cluster_stability <- matrix(0, nrow = B, ncol = k)  # B bootstrap samples, k clusters
+  
+  for (i in 1:B) {
+    # Bootstrap resample (with replacement)
+    sample_data_con <- conData[sample(1:nrow(conData), replace = TRUE), ]
+    sample_data_cat <- catData[sample(1:nrow(catData), replace = TRUE), ]
+    
+    # Run MS PAM
+    ms_fit <- pammix(conData = sample_data_con, catData = sample_data_cat, nclust = k, conWeight = conWeight)
+    
+    # Store the clustering labels
+    cluster_results[[i]] <- ms_fit$cluster
+    
+    # Calculate the stability for each cluster
+    for (cluster_id in 1:k) {
+      cluster_stability[i, cluster_id] <- jaccard_index_cluster(cluster_results[[1]], ms_fit$cluster, cluster_id)
+    }
+  }
+  
+  # Return the stability for each cluster across bootstrap samples
+  return(list(
+    stability = cluster_stability,
+    results = cluster_results
+  ))
+}
+
+# Run MS-PAM bootstrap 
+ms_boot_output <- bootstrap_ms_pam(conVars, catVars, k = numclust_ms, B = 100, conWeight = 0.5)
+
+# Extract components 
+cluster_stability_ms <- ms_boot_output$stability
+cluster_results_ms <- ms_boot_output$results
+
+# calculate the mean Jaccard stability for each cluster
+mean_stability_per_cluster <- colMeans(cluster_stability_ms)
+
+mean_stability_per_cluster
+
+jaccard_summary_ms <- data.frame(
+  Cluster = 1:ncol(cluster_stability_ms),
+  Mean_Jaccard = mean_stability_per_cluster,
+  SD_Jaccard = apply(cluster_stability_ms, 2, sd, na.rm = TRUE)
+)
+print(jaccard_summary_ms)
+
+# Run for MS =
+cluster_results_ms <- bootstrap_ms_pam(conVars, catVars, k = numclust_ms, B = 100, conWeight = 0.5)
+
+# Calculate stability -- Jaccard Index (uses same function as PAM)
+jaccard_vals_ms <- sapply(1:(B - 1), function(i) {
+  jaccard_index_overall(cluster_results_ms$results[[i]], cluster_results_ms$results[[i + 1]])
+})
+
+overall_mean_jaccard_ms <- mean(jaccard_vals_ms)  # Average Jaccard index for stability
+print(overall_mean_jaccard_ms)
+
+jaccard_summary_ms_extended <- rbind(
+  jaccard_summary_ms,
+  data.frame(
+    Cluster = "Overall_Mean",
+    Mean_Jaccard = overall_mean_jaccard_ms,
+    SD_Jaccard = NA  # You can leave SD blank or compute it if needed
+  )
+)
+# Save to CSV
+write.csv(jaccard_summary_ms_extended, "outputs/mixed_results_mds/jaccard_MS_with_overall.csv", row.names = FALSE)
+```
+
+## Compare Jaccard index between methods -- do the same points stay together, and are the clusters labelled the same across runs? 
+
+```{r}
+df_compare <- data.frame(
+  Method = c("PAM", "MS-PAM", "KAMILA"),
+  Mean_Jaccard = c(mean(jaccard_vals_pam),
+                   mean(jaccard_vals_ms),
+                   mean(jaccard_vals_kam))
+)
+
+ggplot(df_compare, aes(x = Method, y = Mean_Jaccard)) +
   geom_col(fill = "steelblue") +
   ylim(0, 1) +
   labs(title = "Clustering Method Stability Comparison", y = "Mean Jaccard Index")
 ```
+
 
 # Summarize clusters 
 
@@ -704,9 +686,7 @@ print(tab0)
 ```{r}
 PAM_clusters <- CreateTableOne(vars = variable_list, strata = "PAMcluster", data = Data.tables, factorVars = factor_variables, test = FALSE)
 print(PAM_clusters)
-```
 
-```{r, echo = FALSE, include = FALSE}
 PAM_clusters_matrix <- print(PAM_clusters,
                      includeNA = TRUE,
                      showAllLevels = TRUE
@@ -720,9 +700,7 @@ write.csv(PAM_clusters_matrix, file = "outputs/mixed_results_mds/PAM_clusters_su
 ```{r}
 MS_clusters <- CreateTableOne(vars = variable_list, strata = "MScluster", data = Data.tables, factorVars = factor_variables, test = FALSE)
 print(MS_clusters)
-```
 
-```{r, include = FALSE, echo = FALSE}
 MS_clusters_matrix <- print(PAM_clusters,
                              includeNA = TRUE,
                              showAllLevels = TRUE
@@ -736,15 +714,81 @@ write.csv(MS_clusters_matrix, file = "outputs/mixed_results_mds/MS_clusters_summ
 ```{r}
 KAM_clusters <- CreateTableOne(vars = variable_list, strata = "KAMcluster", data = Data.tables, factorVars = factor_variables, test = FALSE)
 print(KAM_clusters)
-```
 
-```{r, include = FALSE, echo = FALSE}
 KAM_clusters_matrix <- print(KAM_clusters,
                              includeNA = TRUE,
                              showAllLevels = TRUE
 )
 
 write.csv(KAM_clusters_matrix, file = "outputs/mixed_results_mds/KAM_clusters_summary.csv")
+```
+
+# Outlier detection 
+```{r}
+# Outlier detection function
+IsOutlier <- function(x) {
+  outlier <- (x < quantile(x, 0.25, na.rm = TRUE) - 3 * IQR(x, na.rm = TRUE)) |
+             (x > quantile(x, 0.75, na.rm = TRUE) + 3 * IQR(x, na.rm = TRUE))
+  as.numeric(outlier)
+}
+
+# Identify outliers for continuous variables
+for (i in names(conVars)) {
+  Data.Cluster[[paste0("Outlier_", i)]] <- IsOutlier(Data.Cluster[[i]])
+}
+
+# Create Exclude column
+Data.Cluster$Exclude <- rowSums(Data.Cluster[, grepl("Outlier", names(Data.Cluster))], na.rm = TRUE)
+
+# Check for outliers
+has_outliers <- any(Data.Cluster$Exclude != 0)
+print(has_outliers)
+```
+
+## Re-run clustering without outliers (if any) 
+
+```{r}
+if (has_outliers) {
+  # Separate outliers
+  outliers <- Data.Cluster[Data.Cluster$Exclude != 0, ]
+  Data.Cluster.NoOutliers <- Data.Cluster[Data.Cluster$Exclude == 0, ]
+  
+  # Re-run clustering on non-outliers
+  # Create conVars and catVars
+  conVars.NoOutliers <- Data.Cluster.NoOutliers %>%
+    dplyr::select(age, PC1_front, PC1_sag, PC2_sag,PC3_sag, speed) %>%
+    mutate(across(everything(), as.numeric)) %>%
+    scale() %>%
+    as.data.frame()
+  
+  catVars.NoOutliers <- Data.Cluster.NoOutliers %>%
+    dplyr::select(sex, severity_contra, knee_oa_location) %>%
+    mutate(across(everything(), as.factor))
+  
+  # re-Run Modha-Spangler
+  ms_fit <- gmsClust(conData = conVars.NoOutliers, catData = catVars.NoOutliers, nclust = numclust_ms,
+                     clustFun = pammix, conDist = L1Dist, catDist = matchingDist)
+  
+  # re-Run KAMILA
+  PredictionThreshold <- 0.5
+  conVars.NoOutliers <- as.data.frame(conVars.NoOutliers)
+  catFactor.NoOutliers <- as.data.frame(catVars.NoOutliers)
+  #Data.Cluster.NoOutliers <- Data.Cluster.NoOutliers %>% ungroup()
+  kam_fit <- kamila(conVars.NoOutliers, catFactor.NoOutliers, numClust = 2:10, numInit = 50, maxIter = 50,
+                    calcNumClust = "ps", predStrThresh = PredictionThreshold)
+  
+  # re-run PAM for comparison
+  gower_dist <- daisy(cbind(conVars.NoOutliers, catVars.NoOutliers), metric = "gower")
+  pam_fit <- pam(gower_dist, k = numclust_pam, diss = TRUE)
+  
+  # Store results
+  cat("Outliers detected:", nrow(outliers), "rows removed.\n")
+  Data.Cluster <- Data.Cluster.NoOutliers  # Update Data.Cluster for downstream use
+  conVars <- conVars.NoOutliers
+  catVars <- catVars.NoOutliers
+} else {
+  cat("No outliers detected. Proceed with original Data.Cluster.\n")
+}
 ```
 
 # Statistical Analyses on clusters 
@@ -754,8 +798,16 @@ library(dplyr)
 library(dunn.test)
 library(broom)
 
-analysis_data <- Data.tables
- 
+# Select dataset
+if (exists("Data.Cluster.NoOutliers")) {
+  analysis_data <- Data.Cluster.NoOutliers
+  
+  cat("Using outlier-filtered data: Data.Cluster.NoOutliers (", nrow(analysis_data), "rows).\n")
+} else {
+  analysis_data <- Data.tables
+  cat("Using original data: Data.Cluster (", nrow(analysis_data), "rows).\n")
+}
+
 # Ensure cluster columns are factors
 analysis_data <- analysis_data %>%
   mutate(
@@ -1109,9 +1161,8 @@ for (cluster_col in cluster_methods) {
 library(viridis)
 
 # Merge cluster assignment to waveform data 
-dat_clust_plot <- analysis_data %>%
-  dplyr::select(c("subject", "PAMcluster", "KAMcluster", "MScluster")) %>%
-  left_join(df_combined, join_by("subject"))
+dat_clust_plot <- df_combined %>%
+  left_join(analysis_data[, c("subject", "PAMcluster", "KAMcluster", "MScluster")], join_by("subject"))
 
 component_names <- c(
   `X`="Sagittal  Plane",
@@ -1436,28 +1487,3 @@ ami_df <- data.frame(
 print(ami_df)
 
 ```
-
-# Choose Best Performing Clustering Method 
-
-Look for a combination of high mean Jaccard Index (range 0 -> 1) and silhouette widths (range -1 -> 1). 
-
-```{r}
-sil_pam <- silhouette(Data.Cluster$PAMcluster, gower_mat)
-#summary(sil_pam)
-cat("Average silhouette width for PAM:")
-mean(sil_pam[, "sil_width"])
-
-sil_ms <- silhouette(Data.Cluster$MScluster, gower_mat)
-#summary(sil_ms)
-cat("Average silhouette width for PAM-MS:")
-mean(sil_ms[, "sil_width"])
-
-sil_kam <- silhouette(Data.Cluster$KAMcluster, gower_mat)
-#summary(sil_kam)
-cat("Average silhouette width for KAM:")
-mean(sil_kam[, "sil_width"])
-
-
-print(jaccard_summary_all)
-```
-
