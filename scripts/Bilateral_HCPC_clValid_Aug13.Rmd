@@ -1,0 +1,1710 @@
+---
+title: "HCPC_clValid"
+author: "Naomi Loughiln"
+date: "2025-08-13"
+output: html_document
+---
+
+
+
+## Hierarchical Clustering (agglom), using Ward's minimum variance criteria
+
+```{r, echo = FALSE, include=FALSE}
+# Load data 
+load("../data/df_mds_coords.RData")
+load("../data/df_mds_result.RData")
+load("../data/df_2023_2025_combined.RData")
+
+# load("../data/lateral/df_mds_coords.RData")
+# load("../data/lateral/df_mds_result.RData")
+
+
+### clustering (Using MDS results)
+library(clusterSim)
+library(cluster)     # For clustering and silhouette
+library(factoextra)  # For visualization
+library(FactoMineR)  # For HCPC clustering
+library(dplyr)       # For data manipulation
+library(ggplot2)     # For visualization
+library(mclust)      # For ARI
+library(here)
+
+```
+
+### Evaluate clustering tendency 
+
+If the value of Hopkins statistic is near 0.5, the data are uniformly distributed. If the value of the Hopkins statistic is far from 0.5, the data are clusterable
+
+```{r}
+#MDS results
+res_mds <- get_clust_tendency(df_mds_result, n = nrow(df_mds_result)-1, graph = FALSE)
+print(res_mds)
+```
+
+## Outlier Detection 
+
+```{r}
+conVars <- c("Dim1", "Dim2")
+IsOutlier <- function(x) {
+  outlier <- (x < quantile(x, 0.25, na.rm = TRUE) - 3 * IQR(x, na.rm = TRUE)) |
+    (x > quantile(x, 0.75, na.rm = TRUE) + 3 * IQR(x, na.rm = TRUE))
+  as.numeric(outlier)
+}
+
+# Identify outliers for continuous variables
+for (i in names(conVars)) {
+  mds_coords[[paste0("Outlier_", i)]] <- IsOutlier(Data.Cluster[[i]])
+}
+
+# Create Exclude column
+mds_coords$Exclude <- rowSums(mds_coords[, grepl("Outlier", names(mds_coords))], na.rm = TRUE)
+
+# Check for outliers
+has_outliers <- any(mds_coords$Exclude != 0)
+cat("Does this data set contain outliers?", has_outliers, "\n")
+```
+
+## Separate Outliers (if any)
+
+```{r}
+if (has_outliers) {
+  # Separate outliers
+  outliers <- mds_coords[Data.Cluster$Exclude != 0, ]
+  cat("The following outliers were removed: \n")
+  print(outliers)
+  
+  # Remove outliers from data sets 
+  mds_coords <- mds_coords[mds_coords$Exclude == 0, ]
+  df_mds_result <- df_mds_result[mds_coords$Exclude == 0, ]
+    
+  cat("Cleaned dataset prepared:", nrow(mds_coords), "\n")
+  
+} else {
+  cat("No outliers detected. Proceed with analysis.\n")
+}
+```
+
+## Test all possible combinations of methods for best silhouette score
+
+```{r}
+library(clValid)
+distmethod = c("euclidean","manhattan")
+clmethods = c("kmeans","pam","diana", "hierarchical")
+
+for (i in distmethod) {
+      dist = daisy(df_mds_result, metric = i, stand = TRUE)
+      distmat = as.matrix(dist)
+      intern = clValid(distmat, nClust = 2:10, clMethods = clmethods, method = "complete", validation = "internal", maxitems = 500, metric = i)
+print(paste(i))
+summary(intern)
+}
+```
+
+### Subsampling with clVaid: Test all possible combinations of methods for best silhouette score
+
+```{r}
+library(clValid)
+
+# Parameters
+n_iterations <- 100  # Number of subsamples
+fraction <- 0.8      # 80% of data
+k_range <- 2:10      # Test k from 2 to 10
+n_samples <- round(nrow(df_mds_result) * fraction)  # Number of rows to sample
+distmethod = c("euclidean","manhattan")
+clmethods = c("kmeans","pam","diana", "hierarchical")
+
+
+# Store results
+sil_results <- data.frame(
+  iteration = integer(),
+  dist_method = character(),
+  cl_method = character(),
+  optimal_k = integer(),
+  mean_silhouette = numeric(),
+  stringsAsFactors = FALSE
+)
+
+set.seed(123)  # For reproducibility
+
+
+# Subsampling and ARI calculation
+for (iter in 1:n_iterations) {
+  # Subsample 80% of the data
+  sample_idx <- sample(1:nrow(df_mds_result), size = n_samples, replace = FALSE)
+  sampled_data <- df_mds_result[sample_idx, ]
+  
+  for (dist_m in distmethod) {
+      dist = daisy(sampled_data, metric = dist_m, stand = TRUE)
+      distmat = as.matrix(dist)
+      
+      intern <- clValid(distmat, nClust = 2:10, clMethods = clmethods, method = "complete", validation = "internal", maxitems = 500, metric = dist_m)
+      
+      opt_stats <- as.data.frame(optimalScores(intern))
+
+      sil_row <- opt_stats["Silhouette", ]
+      sil_results <- rbind(
+        sil_results,
+        data.frame(
+          iteration = iter,
+          dist_method = dist_m,
+          cl_method = sil_row$Method,
+          optimal_k = sil_row$Clusters,
+          mean_silhouette = sil_row$Score,
+          stringsAsFactors = FALSE
+        )
+      )
+    }
+}
+
+# Find most common result (most frequent optimal k)
+most_common <- sil_results %>%
+  group_by(dist_method, cl_method, optimal_k) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+print(most_common)
+
+```
+
+Hierarchical clustering with Manhattan distance results in optimal silhouette scores. 
+
+## Compute Manhattan distance on MDS results 
+
+```{r}
+dist_matrix_mds <- dist(df_mds_result, method = "manhattan")
+```
+
+##  Compute Jaccard Index 
+
+```{r}
+# Compute Jaccard Index for all k 2:10
+library(fpc)
+# Run clusterboot for stability
+k_range <- 2:10 
+s <- 789
+perc <- 0.8
+
+jaccard_function <- function(k_range) {
+  for (i in k_range) {
+    cboot_HCPC = clusterboot(dist_matrix_mds, clustermethod = hclustCBI, method = "ward.D2", k = i, distances = TRUE, bootmethod = "subset", subtuning = nrow(df_mds_result)*perc,B=200, seed= s, count = FALSE)
+    
+    overall_mean_jaccard <- mean(cboot_HCPC$subsetmean, na.rm = TRUE)
+    
+    print(overall_mean_jaccard)
+  }
+}
+
+jaccard_function(2:10)
+```
+
+# Method 1: Perform hierarchical clustering using Ward's method 
+
+```{r}
+hc_ward <- hclust(dist_matrix_mds, method = "ward.D2")
+
+#Determine number of clsuters 
+
+# Computes average silhouette of observations for different values of k
+  fviz_nbclust(
+    df_mds_result,                   
+    FUNcluster = hcut,            # Hierarchical clustering 
+    method = "silhouette", 
+    diss = dist_matrix_mds,
+    k.max = 10,                   # Maximum number of clusters to test
+    hc_method = "ward.D2"        # Linkage method 
+  )
+  
+# Elbow Method 
+  fviz_nbclust(
+    df_mds_result,
+    FUNcluster = hcut,
+    method = "wss",
+    diss = dist_matrix_mds,
+    k.max = 10,
+    hc_method = "ward.D2"
+  )
+
+```
+
+### Dendrogram to inspect number of clusters 
+
+```{r}
+# Plot dendrogram
+plot(hc_ward, main = "Dendrogram (Ward's Method)", sub = "", xlab = "", cex = 0.6)
+```
+
+### Cut dendrogram into k clusters 
+
+Note: manually edit number of clusters based on dendrogram and silhouette widths 
+
+```{r}
+clusters <- cutree(hc_ward, k = 2)
+
+# Add clusters to data
+mds_coords$cluster <- factor(clusters)
+```
+
+```{r}
+# Plot clusters
+ggplot(mds_coords, aes(x = Dim1, y = Dim2, color = cluster)) +
+  geom_point(size = 3) +
+  labs(title = "Hierarchical Clustering on MDS Coordinates") +
+  theme_minimal() +
+  scale_colour_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+
+HC2_plot <- fviz_cluster(
+  list(data = mds_coords[, c("Dim1", "Dim2")], cluster = mds_coords$cluster),
+  repel = TRUE,
+  show.clust.cent = FALSE,
+  show.legend.text = FALSE,
+  pointsize = 1.8,
+  geom = "point",
+  ggtheme = theme_minimal() +
+    theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5)),
+  main = "Hierarchical Clustering on MDS Coordinates"
+) +
+  theme_bw() +
+  scale_colour_manual(values = c("1" = "darkblue", "2" = "cyan4"))+
+  scale_fill_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+HC2_plot
+```
+
+### Compute silhouette scores
+```{r}
+sil_scores <- silhouette(clusters, dist_matrix_mds)
+summary(sil_scores)
+# Plot silhouette scores
+sil_width_plot <- fviz_silhouette(sil_scores) +
+  scale_colour_manual(values = c("1" = "darkblue", "2" = "cyan4"))+
+  scale_fill_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+sil_width_plot
+ggsave("../outputs/sil_width_plot.png", plot = sil_width_plot, width = 8, height = 6, dpi = 300)
+```
+
+### Evaluate Cluster Stability 
+
+Clusterwise Jaccard subsetting mean: < 0.6 unstable 0.6 - 0.75 low stability 0.75 - 0.85 moderate stablity > 0.85 stable
+
+```{r}
+library(fpc)
+
+kbest = 2 #can edit according to number of clusters chosen 
+perc = 0.8
+s = 987
+
+# Run clusterboot for stability
+cboot_HCPC = clusterboot(dist_matrix_mds, clustermethod = hclustCBI, method = "ward.D2", k = kbest, distances = TRUE, bootmethod = "subset", subtuning = nrow(df_mds_result)*perc,B=200, seed= s, count = FALSE)
+
+print(cboot_HCPC)
+
+# Save results
+# Extract components
+jaccard <- cboot_HCPC$subsetmean
+dissolved <- cboot_HCPC$subsetbrd
+recovered <- cboot_HCPC$subsetrecover
+
+# Combine into a data frame
+cboot_df <- data.frame(
+  Cluster = seq_along(jaccard),
+  Jaccard = jaccard,
+  Dissolved = dissolved,
+  Recovered = recovered
+)
+
+overall_mean_jaccard_HCPC <- mean(jaccard, na.rm = TRUE)
+
+jaccard_summary_HCPC <- rbind(
+  cboot_df,
+  data.frame(
+    Cluster = "Overall_Mean",
+    Jaccard = overall_mean_jaccard_HCPC,
+    Dissolved = NA,
+    Recovered = NA
+  )
+)
+print(jaccard_summary_HCPC)
+```
+
+```{r}
+head(mds_coords)
+```
+
+# Plot Waveforms by cluster 
+
+```{r}
+# Merge cluster assignment to waveform data 
+dat_clust_plot <- mds_coords %>%
+  dplyr::select(c("subject", "signal_side", "cluster")) %>%
+  left_join(df_combined, join_by("subject", "signal_side"))
+  
+component_names <- c(
+  `X`="Sagittal  Plane",
+  `Y`="Frontal Plane",
+  `Z`="Transverse Plane")
+
+# Plot
+library(viridis)
+
+plot_WFbyClust_mds_front <- dat_clust_plot %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "Y") %>%
+  filter(item %in% (1:60)) %>%
+  ggplot(aes(x = item, y = value, color = cluster, fill = cluster)) +  # Map both color and fill
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(
+    fun.data = "mean_sdl",
+    fun.args = list(mult = 1),
+    geom = "ribbon",
+    alpha = 0.25,  # Fill will match color
+    colour= NA) +
+  facet_wrap(signal_names ~ signal_components, 
+             scales = "free", 
+             labeller = labeller(signal_components = as_labeller(component_names)), 
+             ncol = 3) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.background = element_rect(fill = scales::alpha("white", 0.5), colour = NA),
+    panel.grid.major = element_line(colour = scales::alpha("grey80", 0.5)),
+    panel.grid.minor = element_line(colour = scales::alpha("grey80", 0.3)),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Mean Frontal Plane Waveforms Coloured by Cluster",
+       x = "Gait Cycle (%)",
+       y = expression("Knee Adduction Angle ("*degree*")"),
+       color = "Cluster",
+       fill = "Cluster") +  # Ensure fill is also labeled
+  scale_color_manual(values = c("1" = "darkblue", "2" = "cyan4")) +  
+  scale_fill_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+
+plot_WFbyClust_mds_front
+#ggsave("../outputs/HC_WFbyClust_plot_front.png", plot = plot_WFbyClust_mds_front, width = 15, height = 10, dpi = 300, units = "cm")
+
+plot_WFbyClust_mds_front_PP <- dat_clust_plot %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "Y") %>%
+  filter(item %in% (1:60)) %>%
+  ggplot(aes(x = item, y = value, color = cluster, fill = cluster)) +  # Map both color and fill
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(
+    fun.data = "mean_sdl",
+    fun.args = list(mult = 1),
+    geom = "ribbon",
+    alpha = 0.25,  # Fill will match color
+    colour= NA) +
+  # facet_wrap(~oa_location) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.background = element_rect(fill = scales::alpha("white", 0.5), colour = NA),
+    panel.grid.major = element_line(colour = scales::alpha("grey80", 0.5)),
+    panel.grid.minor = element_line(colour = scales::alpha("grey80", 0.3)),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Mean Frontal Plane Waveforms Coloured by Cluster",
+       x = "Gait Cycle (%)",
+       y = expression("Knee Adduction Angle ("*degree*")"),
+       color = "Cluster",
+       fill = "Cluster") +  # Ensure fill is also labeled
+  scale_color_manual(values = c("1" = "darkblue", "2" = "cyan4")) +  
+  scale_fill_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+
+plot_WFbyClust_mds_front_PP
+# ggsave("../outputs/HC_WFbyClust_plot_front_PP.png", plot = plot_WFbyClust_mds_front_PP, width = 15, height = 9, dpi = 300, units= "cm")
+
+
+plot_WFbyClust_mds_sag <- dat_clust_plot %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "X") %>%
+  ggplot(aes(x = item, y = value, color = cluster, fill = cluster)) +  # Map both color and fill
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(
+    fun.data = "mean_sdl",
+    fun.args = list(mult = 1),
+    geom = "ribbon",
+    alpha = 0.25,  # Fill will match color
+    colour= NA) +
+  facet_wrap(signal_names ~ signal_components, 
+             scales = "free", 
+             labeller = labeller(signal_components = as_labeller(component_names)), 
+             ncol = 3) +
+  theme_minimal() +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.background = element_rect(fill = scales::alpha("white", 0.5), colour = NA),
+    panel.grid.major = element_line(colour = scales::alpha("grey80", 0.5)),
+    panel.grid.minor = element_line(colour = scales::alpha("grey80", 0.3)),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Mean Sagittal Plane Waveforms Coloured by Cluster",
+       x = "Gait Cycle (%)",
+       y = expression("Knee Flexion Angle ("*degree*")"),
+       color = "Cluster",
+       fill = "Cluster") +  # Ensure fill is also labeled
+  scale_color_manual(values = c("1" = "darkblue", "2" = "cyan4")) +  
+  scale_fill_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+
+plot_WFbyClust_mds_sag
+# ggsave("../outputs/HC_WFbyClust_plot_sag.png", plot = plot_WFbyClust_mds_sag, width = 15, height = 9, units = "cm", dpi = 300)
+
+plot_WFbyClust_mds_sag_PP <- dat_clust_plot %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "X") %>%
+  ggplot(aes(x = item, y = value, color = cluster, fill = cluster)) +  # Map both color and fill
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(
+    fun.data = "mean_sdl",
+    fun.args = list(mult = 1),
+    geom = "ribbon",
+    alpha = 0.25,  # Fill will match color
+    colour= NA) +
+  # facet_wrap(~oa_location) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.background = element_rect(fill = scales::alpha("white", 0.5), colour = NA),
+    panel.grid.major = element_line(colour = scales::alpha("grey80", 0.5)),
+    panel.grid.minor = element_line(colour = scales::alpha("grey80", 0.3)),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Mean Sagittal Plane Waveforms Coloured by Cluster",
+       x = "Gait Cycle (%)",
+       y = expression("Knee Flexion Angle ("*degree*")"),
+       color = "Cluster",
+       fill = "Cluster") +  # Ensure fill is also labeled
+  scale_color_manual(values = c("1" = "darkblue", "2" = "cyan4")) +  
+  scale_fill_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+
+plot_WFbyClust_mds_sag_PP
+# ggsave("../outputs/HC_WFbyClust_plot_sag_PP.png", plot = plot_WFbyClust_mds_sag_PP, width = 15, height = 9, units = "cm", dpi = 300)
+```
+
+## Plot Individual Waveforms 
+
+Check variability in waveforms and if there are any that may be skewing the mean waveforms.
+
+### By OA Location 
+
+```{r}
+plot_WF_mds_front_raw <- dat_clust_plot %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "Y") %>%
+  filter(item %in% (1:60)) %>%
+  ggplot(aes(x = item, y = value, group = subject, color = severity_contra)) + 
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  geom_line(alpha = 0.3, linewidth = 0.6) +  # Individual waveforms
+  theme_minimal() +
+  facet_wrap(~oa_location) +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    panel.background = element_blank(),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Individual Knee Frontal Plane Waveforms by OA location",
+       x = "Gait Cycle (%)",
+       y = "Waveform Value",
+       color = "Contralalteral Severity",
+       fill = "OA location")
+
+
+plot_WF_mds_sag_raw <- dat_clust_plot %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "X") %>%
+  ggplot(aes(x = item, y = value, group = subject, color = severity_contra)) + 
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  geom_line(alpha = 0.3, linewidth = 0.6) +  # Individual waveforms
+  theme_minimal() +
+  facet_wrap(~oa_location) +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    panel.background = element_blank(),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Individual Knee Sagittal Plane Waveforms by OA location",
+       x = "Gait Cycle (%)",
+       y = "Waveform Value",
+       color = "Contralalteral Severity",
+       fill = "OA location") 
+
+plot_WF_mds_front_raw
+plot_WF_mds_sag_raw
+
+```
+
+### By Contralateral Severity 
+```{r, include= FALSE, echo = FALSE}
+plot_WF_mds_front_raw <- dat_clust_plot %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "Y") %>%
+  filter(item %in% (1:60)) %>%
+  ggplot(aes(x = item, y = value, group = subject, color = severity_contra)) + 
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  geom_line(alpha = 0.3, linewidth = 0.6) +  # Individual waveforms
+  stat_summary(
+    aes(group = severity_contra),
+    fun = mean,
+    geom = "line",
+    color = "black",
+    linewidth = 0.6
+  ) +
+  theme_minimal() +
+  facet_wrap(~severity_contra) +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    panel.background = element_blank(),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Individual Knee Frontal Plane Waveforms by Contralateral Severity",
+       x = "Gait Cycle (%)",
+       y = "Waveform Value",
+       color = "Contralateral Severity",
+       fill = "Contralateral Severity")
+
+
+plot_WF_mds_sag_raw <- dat_clust_plot %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "X") %>%
+  ggplot(aes(x = item, y = value, group = subject, color = severity_contra)) + 
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  geom_line(alpha = 0.3, linewidth = 0.6) +  # Individual waveforms
+  stat_summary(
+    aes(group = severity_contra),
+    fun = mean,
+    geom = "line",
+    color = "black",
+    linewidth = 0.6
+  ) +
+  theme_minimal() +
+  facet_wrap(~severity_contra) +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    panel.background = element_blank(),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Individual Knee Sagittal Plane Waveforms by Contralateral Severity",
+       x = "Gait Cycle (%)",
+       y = "Waveform Value",
+       color = "Contralateral Severity",
+       fill = "Contralateral Severity") 
+
+plot_WF_mds_front_raw
+plot_WF_mds_sag_raw
+
+```
+
+### By Cluster 
+
+```{r}
+plot_WFbyClust_mds_front_raw <- dat_clust_plot %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "Y") %>%
+  filter(item %in% (1:60)) %>%
+  ggplot(aes(x = item, y = value, group = subject, color = cluster)) + 
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  geom_line(alpha = 0.3, linewidth = 0.6) +  # Individual waveforms
+  facet_wrap(~cluster) +
+  theme_minimal() +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    panel.background = element_blank(),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Individual Knee Frontal Plane Waveforms by Cluster",
+       x = "Gait Cycle (%)",
+       y = "Waveform Value",
+       color = "Cluster",
+       fill = "Cluster") +
+  scale_color_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+
+
+plot_WFbyClust_mds_sag_raw <- dat_clust_plot %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "X") %>%
+  ggplot(aes(x = item, y = value, group = subject, color = cluster)) + 
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  geom_line(alpha = 0.3, linewidth = 0.6) +  # Individual waveforms
+  facet_wrap(~cluster) +
+  theme_minimal() +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    panel.background = element_blank(),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Individual Knee Sagittal Plane Waveforms by Cluster",
+       x = "Gait Cycle (%)",
+       y = "Waveform Value",
+       color = "Cluster",
+       fill = "Cluster") +
+  scale_color_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+
+plot_WFbyClust_mds_front_raw
+plot_WFbyClust_mds_sag_raw
+
+```
+
+# Optional: Plot with healthy (asymptomatic) controls
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(RColorBrewer)
+set.seed(123)
+
+load("../data/df_RC_MWF_merged_2023.RData")
+
+# Subjects where both legs are "Asymptomatic" (asymptomatic controls)
+asymp_controls <- df_2023 %>%
+  group_by(subject) %>%
+  summarise(all_asymp = all(severity == "Asymptomatic"), .groups = "drop") %>%
+  filter(all_asymp) %>%
+  pull(subject)
+
+# Randomly select ONE side per subject, then keep all rows from that side
+healthy_df <- df_2023 %>%
+  filter(subject %in% asymp_controls) %>%
+  group_by(subject) %>%
+  mutate(
+    selected_side = sample(unique(signal_side), size = 1)
+  ) %>%
+  ungroup() %>%
+  filter(signal_side == selected_side) %>%
+  mutate(
+    cluster = "Healthy",
+    group   = "Healthy"
+  ) %>%
+  select(-selected_side)
+
+# Prepare clustered data with group column
+clust_df <- dat_clust_plot %>%
+  mutate(group = as.character(cluster))  # Convert cluster to character for consistency
+
+#Combine into new data frame
+dat_clust_healthy <- bind_rows(clust_df, healthy_df)
+
+# check output 
+print(paste("Unique subjects in clustered data:", n_distinct(clust_df$subject)))
+print(paste("Unique subjects in healthy controls:", n_distinct(healthy_df$subject)))
+print(table(dat_clust_healthy$group))
+
+##Plot report version 
+plot_WFbyClust_with_controls_sag <- dat_clust_healthy %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "X") %>%
+  ggplot(aes(x = item, y = value, color = group, fill = group)) +  # Use group instead of cluster
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  # Uncomment if you want ribbons
+  stat_summary(
+    fun.data = "mean_sdl",
+    fun.args = list(mult = 1),
+    geom = "ribbon",
+    alpha = 0.25,
+    colour = NA
+  ) +
+  facet_wrap(signal_names ~ signal_components, 
+             scales = "free", 
+             labeller = labeller(signal_components = as_labeller(component_names)), 
+             ncol = 3) +
+  theme_minimal() +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.background = element_rect(fill = scales::alpha("white", 0.5), colour = NA),
+    panel.grid.major = element_line(colour = scales::alpha("grey80", 0.5)),
+    panel.grid.minor = element_line(colour = scales::alpha("grey80", 0.3)),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Mean Waveforms by Cluster with Healthy Comparison",
+       x = "Gait Cycle (%)",
+       y = "Mean Waveform Value",
+       color = "Cluster",
+       fill = "Cluster") +
+  scale_color_viridis(discrete = TRUE, option = "D") +  # Viridis for lines
+  scale_fill_viridis(discrete = TRUE, option = "D")
+
+# Display plot
+print(plot_WFbyClust_with_controls_sag)
+
+##Plot report version 
+plot_WFbyClust_with_controls_front <- dat_clust_healthy %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "Y") %>%
+  filter(item %in% 1:60) %>%
+  ggplot(aes(x = item, y = value, color = group, fill = group)) +  # Use group instead of cluster
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  # Uncomment if you want ribbons
+  stat_summary(
+    fun.data = "mean_sdl",
+    fun.args = list(mult = 1),
+    geom = "ribbon",
+    alpha = 0.25,
+    colour = NA
+  ) +
+  facet_wrap(signal_names ~ signal_components, 
+             scales = "free", 
+             labeller = labeller(signal_components = as_labeller(component_names)), 
+             ncol = 3) +
+  theme_minimal() +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.background = element_rect(fill = scales::alpha("white", 0.5), colour = NA),
+    panel.grid.major = element_line(colour = scales::alpha("grey80", 0.5)),
+    panel.grid.minor = element_line(colour = scales::alpha("grey80", 0.3)),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Mean Waveforms by Cluster with Healthy Comparison",
+       x = "Gait Cycle (%)",
+       y = "Mean Waveform Value",
+       color = "Cluster",
+       fill = "Cluster") +
+  scale_color_viridis(discrete = TRUE, option = "D") +  # Viridis for lines
+  scale_fill_viridis(discrete = TRUE, option = "D")
+
+# Display plot
+print(plot_WFbyClust_with_controls_front)
+```
+
+
+
+### Prep data for Export for SPM Analysis 
+
+1. OA Cluster 1 vs OA Cluster 2 (cluster comparison)
+
+2. OA Cluster 1 vs Healthy (clinical comparison)
+
+3. OA Cluster 2 vs Healthy (clinical comparison)
+
+4. All OA vs Healthy (overall pathology comparison)
+
+```{r}
+# Create output directory for SPM data
+if (!dir.exists("../data/spm_export")) {
+  dir.create("../data/spm_export", recursive = TRUE)
+}
+
+gait_all_groups <- dat_clust_healthy
+```
+
+### Export data for SPM 
+
+```{r}
+export_for_spm_comparison <- function(data, signal_name_filter, component_filter, 
+                                     group1_filter, group2_filter,
+                                     output_filename, description) {
+  
+  cat("\n", rep("-", 70), "\n", sep = "")
+  cat("Exporting:", description, "\n")
+  cat(rep("-", 70), "\n", sep = "")
+  
+  # Filter data for the two groups being compared
+  comparison_data <- data %>%
+    filter(
+      signal_names == signal_name_filter,
+      signal_components == component_filter,
+      group %in% c(group1_filter, group2_filter)
+    ) %>%
+    select(subject, group, signal_side, item, value) %>%
+    pivot_wider(
+      names_from = item,
+      values_from = value,
+      id_cols = c(subject, group, signal_side)
+    )
+  
+  # Data quality checks
+  n_group1 <- sum(comparison_data$group == group1_filter)
+  n_group2 <- sum(comparison_data$group == group2_filter)
+  n_timepoints <- ncol(comparison_data) - 3
+  
+  cat("  Group 1 (", group1_filter, "):", n_group1, "waveforms\n", sep = "")
+  cat("  Group 2 (", group2_filter, "):", n_group2, "waveforms\n", sep = "")
+  cat("  Time points:", n_timepoints, "\n")
+  
+  # Check for missing data
+  missing_counts <- colSums(is.na(comparison_data))
+  if (any(missing_counts > 0)) {
+    cat(" WARNING: Missing values detected!\n")
+    cat("  Missing timepoints:", sum(missing_counts > 0), "\n")
+  } else {
+    cat("  ✓ No missing values\n")
+  }
+  
+  # Check sample size adequacy
+  if (n_group1 < 3 || n_group2 < 3) {
+    cat(" WARNING: Small sample size (need at least 3 per group)\n")
+  }
+  
+  # Save
+  output_path <- file.path("../data/spm_export", output_filename)
+  write.csv(comparison_data, file = output_path, row.names = FALSE)
+  cat("  ✓ Saved to:", output_path, "\n")
+  
+  return(invisible(comparison_data))
+}
+```
+
+```{r}
+cat("\n", rep("=", 80), "\n", sep = "")
+cat("EXPORTING DATA FOR ALL SPM COMPARISONS\n")
+cat(rep("=", 80), "\n", sep = "")
+
+# Define signals to export
+signals_list <- list(
+  list("KNEE_ANGLE", "Y", "Knee Frontal Angle"),
+  list("KNEE_ANGLE", "X", "Knee Sagittal Angle")
+)
+
+# Define comparisons to make
+# Format: list(group1, group2, filename_suffix, description)
+comparisons_list <- list(
+  list("1", "2", "cluster1_vs_cluster2", "OA Cluster 1 vs OA Cluster 2"),
+  list("1", "Healthy", "cluster1_vs_healthy", "OA Cluster 1 vs Healthy"),
+  list("2", "Healthy", "cluster2_vs_healthy", "OA Cluster 2 vs Healthy")
+)
+
+# Export all combinations
+library(tidyr)
+for (signal_info in signals_list) {
+  signal_name <- signal_info[[1]]
+  signal_comp <- signal_info[[2]]
+  signal_label <- signal_info[[3]]
+  
+  # Check if signal exists
+  signal_exists <- any(gait_all_groups$signal_names == signal_name & 
+                       gait_all_groups$signal_components == signal_comp)
+  
+  if (!signal_exists) {
+    cat("\n⊗ Skipping", signal_label, "- not found in dataset\n")
+    next
+  }
+  
+  cat("\n", rep("#", 80), "\n", sep = "")
+  cat("SIGNAL:", signal_label, "\n")
+  cat(rep("#", 80), "\n", sep = "")
+  
+  # Export each comparison for this signal
+  for (comp_info in comparisons_list) {
+    group1 <- comp_info[[1]]
+    group2 <- comp_info[[2]]
+    suffix <- comp_info[[3]]
+    comp_desc <- comp_info[[4]]
+    
+    # Create filename
+    signal_filename <- tolower(gsub(" ", "_", signal_label))
+    filename <- paste0("spm_", signal_filename, "_", suffix, ".csv")
+    
+    # Export
+    export_for_spm_comparison(
+      data = gait_all_groups,
+      signal_name_filter = signal_name,
+      component_filter = signal_comp,
+      group1_filter = group1,
+      group2_filter = group2,
+      output_filename = filename,
+      description = paste(signal_label, "-", comp_desc)
+    )
+  }
+}
+```
+
+```{r}
+cat("\n", rep("=", 80), "\n", sep = "")
+cat("EXPORTING COMBINED OA VS HEALTHY COMPARISONS\n")
+cat(rep("=", 80), "\n", sep = "")
+
+# Create combined OA group (clusters 1 and 2 together)
+gait_oa_combined <- gait_all_groups %>%
+  mutate(group = if_else(group %in% c("1", "2"), "OA", group))
+
+for (signal_info in signals_list) {
+  signal_name <- signal_info[[1]]
+  signal_comp <- signal_info[[2]]
+  signal_label <- signal_info[[3]]
+  
+  signal_exists <- any(gait_oa_combined$signal_names == signal_name & 
+                       gait_oa_combined$signal_components == signal_comp)
+  
+  if (signal_exists) {
+    signal_filename <- tolower(gsub(" ", "_", signal_label))
+    filename <- paste0("spm_", signal_filename, "_all_oa_vs_healthy.csv")
+    
+    export_for_spm_comparison(
+      data = gait_oa_combined,
+      signal_name_filter = signal_name,
+      component_filter = signal_comp,
+      group1_filter = "OA",
+      group2_filter = "Healthy",
+      output_filename = filename,
+      description = paste(signal_label, "- All OA vs Healthy")
+    )
+  }
+}
+
+```
+
+
+
+```{r}
+cat("\n", rep("=", 80), "\n", sep = "")
+cat("CREATING SUMMARY DOCUMENTS\n")
+cat(rep("=", 80), "\n", sep = "")
+
+# Subject manifest
+manifest <- gait_oa_combined %>%
+  select(subject, signal_side, cluster, group) %>%
+  arrange(group, cluster, subject)
+
+write.csv(manifest, 
+          file = "../data/spm_export/subject_manifest_all_groups.csv", 
+          row.names = FALSE)
+cat("Subject manifest saved (subject_manifest_all_groups.csv)\n")
+
+# Summary statistics
+summary_stats <- manifest %>%
+  group_by(group, cluster) %>%
+  summarise(
+    n_rows = n(),
+    .groups = "drop"
+  )
+
+write.csv(summary_stats, 
+          file = "../data/spm_export/group_summary.csv", 
+          row.names = FALSE)
+cat("Group summary saved (group_summary.csv)\n")
+
+# List of exported files
+exported_files <- list.files("../data/spm_export", pattern = "^spm_.*\\.csv$", full.names = FALSE)
+comparison_files <- data.frame(
+  Filename = exported_files,
+  Comparison_Type = case_when(
+    grepl("cluster1_vs_cluster2", exported_files) ~ "OA Cluster Comparison",
+    grepl("cluster1_vs_healthy", exported_files) ~ "Cluster 1 vs Healthy",
+    grepl("cluster2_vs_healthy", exported_files) ~ "Cluster 2 vs Healthy",
+    grepl("all_oa_vs_healthy", exported_files) ~ "All OA vs Healthy",
+    TRUE ~ "Other"
+  )
+)
+
+write.csv(comparison_files, 
+          file = "../data/spm_export/exported_files_list.csv", 
+          row.names = FALSE)
+cat("File list saved (exported_files_list.csv)\n")
+```
+
+```{r}
+colnames(gait_all_groups)
+```
+
+```{r}
+# Age/demographic check if available
+  demo_check <- gait_all_groups %>%
+    distinct(subject, age, cluster, group) %>%
+    group_by(cluster, group) %>%
+    summarise(
+      mean_age = mean(age, na.rm = TRUE),
+      sd_age = sd(age, na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    )
+
+  cat("\nAge distribution by group:\n")
+  print(demo_check)
+  cat("\n NOTE: Consider age-matching or including age as covariate in analysis\n")
+```
+
+
+```{r, include = FALSE, echo = FALSE, eval= FALSE}
+# Save data for another project -- dw about it 
+set.seed(123)
+
+dat_nn_prelim <- dat_clust_healthy %>%
+  mutate(group = ifelse(group %in% c(1,2), 1, 0)) %>% 
+  filter(group == 0 | (group == 1 & oa_location == "medial")) %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components != "Z") 
+
+# Select one random leg per healthy subject
+healthy_one_leg <- dat_nn_prelim %>%
+  filter(group == 0) %>%
+  # Create lookup table of randomly selected legs
+  {
+    selected_legs <- distinct(., subject, signal_side) %>%
+      group_by(subject) %>%
+      slice_sample(n = 1) %>%
+      ungroup()
+    
+    # Filter original data to keep only selected legs
+    semi_join(., selected_legs, by = c("subject", "signal_side"))
+  }
+
+# Keep OA data as is 
+oa <- dat_nn_prelim %>%
+  filter(group == 1)
+
+# Combine both
+dat_nn <- bind_rows(healthy_one_leg, oa) %>%
+  select(subject, group, item, value, signal_components)
+         
+write.csv(dat_nn, "../data/dat_nn.csv", row.names = FALSE)
+
+
+dat_nn %>%
+  group_by(subject, signal_components) %>%
+  summarise(n_items = n(), .groups = 'drop') 
+
+
+```
+
+
+## Optional: Plot contrateral knee angles by cluster
+
+Statistical analyses (below) showed contralateral severity to differ significantly between clusters. Look into it further. 
+
+```{r}
+# Get subject id, cluster, and signal side from cohort 
+dat_ipsi <- dat_clust_plot %>%
+  dplyr::select(subject, signal_side, cluster)
+
+print(length(unique(dat_ipsi$subject)))
+
+dat_ipsi$contralateral_side <- ifelse(dat_ipsi$signal_side == "RIGHT", "LEFT", "RIGHT")  # add contralateral signal side 
+
+# Load waveform data
+load("../data/df_merged_RC_v3d_2025.RData") 
+load("../data/df_RC_MWF_merged_2023.RData")  
+
+# Check for common subject ids
+common_subjects <- intersect(df_2025$subject, df_2023$subject)
+print(length(common_subjects))
+
+# Combine waveform dataframes 
+colnames_2025 <- colnames(df_2025)
+df_2023 <- df_2023%>%
+  dplyr::select(all_of(colnames_2025))
+combined_data <- rbind(df_2023, df_2025) 
+combined_data <- combined_data %>% 
+  filter(subject %in% dat_ipsi$subject)
+
+print(length(unique(combined_data$subject)))
+
+combined_data <- combined_data %>%
+  dplyr::select(subject, signal_side, signal_names, signal_components, item, value)
+
+# Get contralateral waveforms
+contra_keys <- dat_ipsi %>%
+  select(subject, contralateral_side, cluster) %>%
+  distinct() %>%
+  rename(signal_side = contralateral_side)
+
+dat_contra <- combined_data %>%
+  semi_join(contra_keys, by = c("subject", "signal_side")) # keeps row in combined_data only if a match exists in contra_keys (drops ipsi wave forms), does not add columns 
+
+print(length(unique(dat_contra$subject)))
+
+dat_contra <- dat_contra %>%
+  left_join(contra_keys, by = c("subject", "signal_side")) # adds cluster labels 
+
+print(length(unique(dat_contra$subject)))
+
+
+# Add healthy controls into new data frame
+dat_clust_healthy <- bind_rows(dat_contra, healthy_df)
+
+print(length(unique(dat_clust_healthy$subject)))
+
+component_names <- c(
+  `X`="Sagittal  Plane",
+  `Y`="Frontal Plane",
+  `Z`="Transverse Plane")
+
+# Plot
+library(viridis)
+
+plot_WFbyClust_mds_front_contra <- dat_clust_healthy %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "Y") %>%
+  filter(item %in% (1:60)) %>%
+  ggplot(aes(x = item, y = value, color = cluster, fill = cluster)) +  # Map both color and fill
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(
+    fun.data = "mean_sdl",
+    fun.args = list(mult = 1),
+    geom = "ribbon",
+    colour = NA,
+    alpha = 0.25) +  # Fill will match color
+  facet_wrap(signal_names ~ signal_components, 
+             scales = "free", 
+             labeller = labeller(signal_components = as_labeller(component_names)), 
+             ncol = 3) +
+  theme_minimal() +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    panel.background = element_blank(),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Contralateral Leg Mean Waveforms Coloured by Cluster",
+       x = "Gait Cycle (%)",
+       y = "Mean Waveform Value",
+       color = "Cluster",
+       fill = "Cluster") +  # Ensure fill is also labeled
+  scale_color_viridis(discrete = TRUE, option = "D") +  # Viridis for lines
+  scale_fill_viridis(discrete = TRUE, option = "D")
+
+plot_WFbyClust_mds_front_contra
+
+
+plot_WFbyClust_mds_sag_contra <- dat_clust_healthy %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "X") %>%
+  ggplot(aes(x = item, y = value, color = cluster, fill = cluster)) +  # Map both color and fill
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(
+    fun.data = "mean_sdl",
+    fun.args = list(mult = 1),
+    geom = "ribbon",
+    colour = NA,
+    alpha = 0.25) +  # Fill will match color
+  facet_wrap(signal_names ~ signal_components, 
+             scales = "free", 
+             labeller = labeller(signal_components = as_labeller(component_names)), 
+             ncol = 3) +
+  theme_minimal() +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    panel.background = element_blank(),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Contralateral Leg Mean Waveforms Coloured by Cluster",
+       x = "Gait Cycle (%)",
+       y = "Mean Waveform Value",
+       color = "Cluster",
+       fill = "Cluster") +  # Ensure fill is also labeled
+  scale_color_viridis(discrete = TRUE, option = "D") +  # Viridis for lines
+  scale_fill_viridis(discrete = TRUE, option = "D")
+
+plot_WFbyClust_mds_sag_contra
+```
+
+
+# Plot Ipsi and Contralteral Legs together 
+
+```{r}
+# Add leg label to each dataset
+ipsi_keys <- dat_ipsi %>%
+  select(subject, signal_side, cluster) %>%
+  distinct() 
+
+dat_ipsi_labeled <- combined_data %>%
+  semi_join(ipsi_keys, by = c("subject", "signal_side")) %>%
+  mutate(leg = "ipsilateral")
+
+dat_ipsi_labeled <- dat_ipsi_labeled %>%
+  left_join(ipsi_keys, by = c("subject", "signal_side"))
+
+dat_contra_labeled <- dat_contra %>%
+  mutate(leg = "contralateral")
+
+# Combine the two datasets
+gait_combined <- bind_rows(dat_ipsi_labeled, dat_contra_labeled) 
+
+# Plot
+plot_WF_comp_sag <- gait_combined %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "X") %>%
+  ggplot(aes(x = item, y = value, color = cluster, fill = cluster, linetype = leg)) +
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  # stat_summary(
+  #   fun.data = "mean_sdl",
+  #   fun.args = list(mult = 1),
+  #   geom = "ribbon",
+  #   colour = NA,
+  #   alpha = 0.15) +  # Fill will match color
+  theme_minimal() +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    panel.background = element_blank(),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Mean Waveforms Coloured by Cluster",
+       x = "Gait Cycle (%)",
+       y = "Mean Waveform Value",
+       color = "Cluster",
+       linetype = "Leg") +  
+  scale_color_manual(values = c("1" = "darkblue", "2" = "cyan4")) + 
+  scale_linetype_manual(values = c("ipsilateral" = "solid", "contralateral" = "dashed")) +
+  scale_fill_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+
+plot_WF_comp_sag
+
+plot_WF_comp_front <- gait_combined %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  filter(signal_components == "Y") %>%
+  filter(item %in% 1:60) %>%
+  ggplot(aes(x = item, y = value, color = cluster, fill = cluster, linetype = leg)) +
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.25) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  # stat_summary(
+  #   fun.data = "mean_sdl",
+  #   fun.args = list(mult = 1),
+  #   geom = "ribbon",
+  #   colour = NA,
+  #   alpha = 0.15) +  # Fill will match color
+  theme_minimal() +
+  theme(
+    axis.line = element_line(linewidth = 1, colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), 
+    panel.background = element_blank(),
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(title = "Mean Waveforms Coloured by Cluster",
+       x = "Gait Cycle (%)",
+       y = "Mean Waveform Value",
+       color = "Cluster",
+       linetype = "Leg") +  
+  scale_color_manual(values = c("1" = "darkblue", "2" = "cyan4")) + 
+  scale_linetype_manual(values = c("ipsilateral" = "solid", "contralateral" = "dashed")) +
+  scale_fill_manual(values = c("1" = "darkblue", "2" = "cyan4"))
+
+plot_WF_comp_front
+
+```
+
+## Calculate Asymmetry -- Root Mean Squared Difference  
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Reshape to wide format to align ipsi and contra values by subject and item
+waveform_wide <- gait_combined %>%
+  filter(signal_names == "KNEE_ANGLE") %>%
+  select(subject, signal_components, item, value, leg, cluster) %>%
+  pivot_wider(
+    names_from = leg,
+    values_from = value
+  )
+
+# Calculate RMS difference per subject
+rms_asymmetry <- waveform_wide %>%
+  group_by(subject, signal_components, cluster) %>%
+  summarise(
+    rms_diff = sqrt(mean((ipsilateral - contralateral)^2)),
+    .groups = "drop"
+  )
+
+# Check differences between clusters
+rms_asymmetry %>%
+  group_by(cluster) %>%
+  summarise(
+    mean_rms = mean(rms_diff, na.rm = TRUE),
+    sd_rms = sd(rms_diff, na.rm = TRUE),
+    n = n()
+  )
+
+# T-test
+t.test(rms_diff ~ cluster, data = subset(rms_asymmetry, signal_components == "Y"))
+
+t.test(rms_diff ~ cluster, data = subset(rms_asymmetry, signal_components == "X"))
+```
+
+```{r}
+# Verify you have both legs per subject
+leg_availability <- gait_combined %>%
+  group_by(subject, cluster) %>%
+  summarise(
+    has_ipsi = any(leg == "ipsilateral"),
+    has_contra = any(leg == "contralateral"),
+    n_legs = n_distinct(leg),
+    .groups = "drop"
+  )
+
+# Check if we have both legs for most subjects
+table(leg_availability$n_legs)
+
+# Subjects with both legs
+both_legs <- leg_availability %>%
+  filter(n_legs == 2)
+
+cat("Subjects with both legs:", nrow(both_legs), "\n")
+cat("Cluster 1:", sum(both_legs$cluster == 1), "\n")
+cat("Cluster 2:", sum(both_legs$cluster == 2), "\n")
+```
+
+```{r}
+# The 38 cases missing contralateral leg, were from df_2025 -- only worst leg was recorded 
+print(length(unique(dat_contra$subject)))
+print(length(unique(dat_clust_plot$subject)))
+
+side_counts <- df_2025 %>%
+  filter(subject %in% dat_ipsi$subject) %>%
+  distinct(subject, signal_side) %>%
+  count(subject)
+
+table(side_counts$n)
+```
+
+
+```{r}
+# EXPORT FOR CONTRALATERAL SPM ANALYSIS
+
+library(tidyr)
+library(dplyr)
+
+# Get subjects with BOTH legs
+subjects_with_both_legs <- gait_combined %>%
+  group_by(subject) %>%
+  summarise(
+    n_legs = n_distinct(leg),
+    has_cluster = any(!is.na(cluster)),
+    .groups = "drop"
+  ) %>%
+  filter(n_legs == 2, has_cluster)
+
+cat("Subjects available for bilateral analysis:", nrow(subjects_with_both_legs), "\n")
+
+# Filter to these subjects
+df_bilateral <- gait_combined %>%
+  filter(subject %in% subjects_with_both_legs$subject,
+         !is.na(cluster))
+
+# Verify structure
+df_bilateral %>%
+  group_by(cluster, leg) %>%
+  summarise(n_subjects = n_distinct(subject), .groups = "drop")
+
+# Export for SPM - SEPARATE BY LEG for paired analysis
+
+# Function to export by leg
+export_by_leg <- function(data, signal_name, component, leg_type, output_file) {
+  
+  spm_data <- data %>%
+    filter(
+      signal_names == signal_name,
+      signal_components == component,
+      leg == leg_type
+    ) %>%
+    select(subject, cluster, item, value) %>%
+    pivot_wider(
+      names_from = item,
+      values_from = value,
+      id_cols = c(subject, cluster)
+    ) %>%
+    arrange(cluster, subject)  # Important: same subject order for pairing
+  
+  write.csv(spm_data, file = output_file, row.names = FALSE)
+  cat("Exported:", output_file, "\n")
+  cat("  Rows:", nrow(spm_data), "\n")
+  
+  return(invisible(spm_data))
+}
+
+# Create directory
+dir.create("../data/spm_export/bilateral", showWarnings = FALSE, recursive = TRUE)
+
+# Export ipsilateral and contralateral separately
+signals <- list(
+  c("KNEE_ANGLE", "Y", "knee_frontal"),
+  c("KNEE_ANGLE", "X", "knee_sagittal")
+  # c("HIP_ANGLE", "Y", "hip_frontal"),
+  # c("HIP_ANGLE", "X", "hip_sagittal")
+)
+
+for (signal_info in signals) {
+  signal_name <- signal_info[1]
+  component <- signal_info[2]
+  base_name <- signal_info[3]
+  
+  # Ipsilateral
+  export_by_leg(
+    df_bilateral, 
+    signal_name, 
+    component, 
+    "ipsilateral",
+    paste0("../data/spm_export/bilateral/", base_name, "_ipsi.csv")
+  )
+  
+  # Contralateral
+  export_by_leg(
+    df_bilateral, 
+    signal_name, 
+    component, 
+    "contralateral",
+    paste0("../data/spm_export/bilateral/", base_name, "_contra.csv")
+  )
+}
+
+cat("\n✓ Bilateral data exported\n")
+```
+
+
+
+
+# Cluster Characteristics
+
+```{r, echo = FALSE}
+library(dplyr)
+library(tableone)
+library(pander)
+load("../data/mds_input_data.RData")
+
+# Edit based on PCA results (only PCs with >= 0.8 Culm Var proportion are included)
+variable_list <- c("age", "PC1_front", "PC1_sag", "PC2_sag", "PC3_sag", "speed", "sex", "severity_contra", "oa_location", "signal_side", "kl_contra")
+factor_variables <- c("sex", "severity_contra", "kl_contra", "oa_location", "signal_side")
+continuous_vars <- c("age", "PC1_front", "PC1_sag", "PC2_sag", "PC3_sag", "speed")
+ 
+dat_clust_tables <- mds_input_data %>%
+  left_join(mds_coords[, c("subject", "cluster")], join_by("subject"))
+dat_clust_tables <- dat_clust_tables %>%
+  left_join(
+    df_combined %>%
+      group_by(subject) %>%
+      summarise(
+        sex = first(sex),
+        oa_location = first(oa_location),
+        severity_contra = first(severity_contra),
+        kl_contra = first(kl_contra)
+      ) %>%
+      dplyr::select(subject, sex, oa_location, severity_contra, kl_contra), 
+    by = "subject"
+    
+    )
+
+print("Overall Sample Characteristics")
+tab0 <- CreateTableOne(vars = variable_list,, data = dat_clust_tables, factorVars = factor_variables, test = FALSE)
+print(tab0,  formatOptions = list(big.mark = ","))
+```
+
+```{r, echo = FALSE, include = FALSE}
+tab0_matrix <- print(tab0,
+  includeNA = TRUE,
+  showAllLevels = TRUE
+)
+
+write.csv(tab0_matrix, file = "../outputs/HCPC_sample_summary.csv")
+```
+
+```{r}
+## cluster tables
+print("Cluster Characteristics")
+tab1 <- CreateTableOne(vars = variable_list, strata = "cluster" , data = dat_clust_tables, factorVars = factor_variables, test = FALSE)
+print(tab1)
+```
+
+```{r, include = FALSE, echo = FALSE}
+tab1_matrix <- print(tab1,
+  includeNA = TRUE,
+  showAllLevels = TRUE
+)
+
+#convert to .csv for report
+write.csv(tab1_matrix, file = "../outputs/HCPC_k2_cluster_summaries.csv")
+```
+
+```{r}
+# Check how many subjects are missing KL grades
+print("Check how many subjects are missing KL grades")
+print(sum(is.na(dat_clust_tables$kl_contra)))
+dat_clust_tables %>%
+  filter(is.na(kl_contra)) %>%
+  distinct(subject, cluster) %>%
+  group_by(cluster) %>%
+  summarise(n_missing = n())
+```
+
+# Statistical tests on Clusters
+
+## Continuous Variables 
+
+```{r}
+library(broom)
+
+test_continuous_var <- function(data, variable, cluster_col = "cluster", file_prefix = NULL) {
+  var_sym <- rlang::sym(variable)
+  cluster_sym <- rlang::sym(cluster_col)
+  
+  # Normality check
+  shapiro_test <- data %>%
+    group_by(!!cluster_sym) %>%
+    filter(n() >= 3) %>% # exclude clusters with less than 3 observations 
+    summarise(p_value = shapiro.test(!!var_sym)$p.value, .groups = "drop")
+  print(shapiro_test)
+  
+  # Check excluded clusters
+  excluded <- data %>%
+    group_by(!!cluster_sym) %>%
+    filter(n() < 3) %>%
+    summarise(n = n(), .groups = "drop")
+  print(excluded)
+  
+  # Determine which test to run
+  if (any(shapiro_test$p_value < 0.05)) {
+    test_result <- kruskal.test(reformulate(cluster_col, response = variable), data = data)
+    test_type <- "Kruskal-Wallis"
+    test_p <- test_result$p.value
+  } else {
+    test_result <- aov(reformulate(cluster_col, response = variable), data = data)
+    test_type <- "ANOVA"
+    test_summary <- summary(test_result)
+    test_p <- test_summary[[1]][["Pr(>F)"]][1]
+  }
+  
+  cat(paste0("\n", test_type, " test for ", variable, ":\n"))
+  print(test_result)
+  
+  # Save main test result (optional -- if signif, pairwise tests will be saved)
+  if (!is.null(file_prefix)) {
+    tidy_test <- tidy(test_result)
+    write.csv(tidy_test, file = paste0("../outputs/", file_prefix, "_", test_type, ".csv"), row.names = FALSE)
+  }
+  
+  # Plot boxplot
+  boxplot(as.formula(paste(variable, "~", cluster_col)), data = data,
+          main = paste(variable, "Across Clusters"), xlab = "Cluster")
+  
+  # Pairwise test if significant
+  if (test_p < 0.05 && length(unique(data[[cluster_col]])) > 2) {
+    if (inherits(test_result, "aov")) {
+      tukey_result <- TukeyHSD(test_result)
+      print(tukey_result)
+      pairwise_df <- as.data.frame(tukey_result[[cluster_col]])
+      pairwise_df$Comparison <- rownames(pairwise_df)
+      pairwise_df <- pairwise_df[, c("Comparison", names(pairwise_df)[1:(ncol(pairwise_df)-1)])]
+      method <- "TukeyHSD"
+    } else {
+      wilcox_result <- pairwise.wilcox.test(data[[variable]], data[[cluster_col]], p.adjust.method = "bonferroni")
+      print(wilcox_result)
+      pairwise_df <- tidy(wilcox_result)
+      method <- "Wilcoxon"
+    }
+    
+    # Save pairwise result
+    if (!is.null(file_prefix)) {
+      write.csv(pairwise_df, file = paste0("../outputs/", file_prefix, "_", method, ".csv"), row.names = FALSE)
+    }
+  }
+}
+```
+
+```{r, warning = FALSE}
+# Run test 
+# Ensure cluster is a factor
+dat_clust_tables <- dat_clust_tables %>% mutate(cluster = as.factor(cluster))
+
+# Edit for PCs included 
+print("AGE")
+test_continuous_var(dat_clust_tables, "age", file_prefix = "k2_HCPC_Age")
+print("SPEED")
+test_continuous_var(dat_clust_tables, "speed", file_prefix = "k2_HCPC_Speed")
+print("PC1 FRONTAL PLANE")
+test_continuous_var(dat_clust_tables, "PC1_front", file_prefix = "k2_HCPC_PC1Front")
+print("PC1 SAGITTAL PLANE")
+test_continuous_var(dat_clust_tables, "PC1_sag", file_prefix = "k2_HCPC_PC1Sag")
+print("PC2 SAGITTAL PLANE")
+test_continuous_var(dat_clust_tables, "PC2_sag", file_prefix = "k2_HCPC_PC2Sag")
+print("PC3 SAGITTAL PLANE")
+test_continuous_var(dat_clust_tables, "PC3_sag", file_prefix = "k2_HCPC_PC3Sag")
+```
+
+# Categorical Variables
+
+```{r}
+test_categorical <- function(var, cluster_col = "final_clusters") {
+  # Create contingency table of unique subjects
+  unique_data <- dat_clust_tables %>%
+    distinct(subject, !!sym(cluster_col), !!sym(var))
+  
+  # Extract vectors for table
+  var_vector <- pull(unique_data, !!sym(var))
+  cluster_vector <- pull(unique_data, !!sym(cluster_col))
+  
+  contingency_table <- table(var_vector, cluster_vector)
+  
+  # Print the table
+  cat(sprintf("\nContingency table for %s (unique subjects):\n", var))
+  print(contingency_table)
+  # Save contingency table as CSV
+  contingency_df <- as.data.frame.matrix(contingency_table)
+  contingency_df$Category <- rownames(contingency_df)
+  write.csv(contingency_df, file = sprintf("../outputs/HCPC_%s_%s_contingency_table.csv", cluster_col, var), row.names = FALSE)
+  
+  # Chi-squared test
+  chi_test <- chisq.test(contingency_table)
+  cat(sprintf("\nChi-squared test for %s:\n", var))
+  print(chi_test)
+  chi_df <- broom::tidy(chi_test)
+  write.csv(chi_df, file = sprintf("../outputs/HCPC_%s_%s_chi_squared.csv", cluster_col, var), row.names = FALSE)
+  
+  # Check expected counts
+  expected <- chi_test$expected
+  if (any(expected < 5)) {
+    cat(sprintf("\nWarning: Some expected counts < 5 for %s, performing Fisher's exact test.\n", var))
+    fisher_test <- fisher.test(contingency_table, simulate.p.value = TRUE)
+    cat(sprintf("Fisher's exact test for %s:\n", var))
+    print(fisher_test)
+    fisher_df <- broom::tidy(fisher_test)
+    write.csv(fisher_df, file = sprintf("../outputs/HCPC_%s_%s_fisher_exact.csv", cluster_col, var), row.names = FALSE)
+  }
+}
+```
+
+```{r, warning = FALSE}
+# Run tests for each categorical variable
+lapply(factor_variables, test_categorical, cluster_col = "cluster")
+```
