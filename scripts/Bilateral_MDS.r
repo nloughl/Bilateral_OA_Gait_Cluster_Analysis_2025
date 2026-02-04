@@ -7,8 +7,12 @@ library(cluster)  # For dist() function with Manhattan distance
 library(stats)
 
 # Load in the data 
+load("data/df_2023_2025_combined.RData") # for demographics 
 load("data/PCA_frontal_plane_results.RData")
 load("data/PCA_sagittal_plane_results.RData")
+
+# load("data/PCA_frontal_plane_results_no_isopatell.RData") # If you want to exclude iso patellofemoral OA
+# load("data/PCA_sagittal_plane_results_no_isopatell.RData") # If you want to exclude iso patellofemoral OA
 
 ## Prepare the data (Need to combine all numeric data to be clustered into 1 table)
 # Rename frontal plane PCA columns
@@ -54,7 +58,7 @@ mds_combined_data <- frontal_data %>%
   inner_join(demographic_data, by = c("subject"))
 
 # Verify dimensions 
-dim(mds_combined_data)  # Should be ~179
+dim(mds_combined_data)  # Should be ~179 (or 145 if lateral cases removed)
 colnames(mds_combined_data)  # Should include PC1_front, PC2_front, PC1_sag, PC2_sag, speed, age, sex etc.
 
 # Identify PCS with >=80% culmulative proportion to include for analysis 
@@ -134,7 +138,7 @@ mds_sev <- mds_coords %>%
   inner_join(sev_data, by = c("subject", "signal_side"), relationship = "one-to-one")
 
 # Verify
-dim(mds_sev)  # Should match dim(mds_coords), 179 subjects 
+dim(mds_sev)  # Should match dim(mds_coords), 179 or 145 subjects 
 colnames(mds_sev)
 
 ggplot(mds_sev, aes(x = Dim1, y = Dim2, color = factor(severity_contra))) +

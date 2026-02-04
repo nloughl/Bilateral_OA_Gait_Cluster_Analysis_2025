@@ -1,6 +1,9 @@
 # PCA For Clustering, knee angles (frontal and sagittal only)
 # Code modified from /Volumes/hmrl-data/r-code/PCA_in_R_helpers/PCA_in_R_Example.R (Jereme Outerley's)
 
+# July 20: Previous analyses including all (lateral and medial) OA locations were conducted. See saved html outputs dated before July 20, 2025. Will now redo analysis excluding lateral OA (as it has distinct gait affects from medial and may be dictating clustering over other features)
+# Aug. 13: Will filter out isolated patellofemoral to see if it alters results (as rest of cases are medial). Results in Bilateral_HCPC_clValid_noisopatellAug13.html
+
 set.seed(123)  # for reproducibility
 
 library(here)
@@ -13,6 +16,7 @@ library(factoextra) # needed for fviz_eig (nice scree plots)
 
 # Load the data (combined 2023/2025 data set --one leg, walk, first visit only, at least one severe leg)
 load("data/df_2023_2025_combined.RData")
+
 
 ## Prepare data for PCA 
 varlist_long<-c("subject", "signal_side", "item", "value", "severity_contra", "severity", "sex", "signal_names", "signal_components", "knee_oa_location", "kl_score", "kl_contra")
@@ -28,6 +32,15 @@ df_for_train_mean <- df_combined %>%
   rename("knee_oa_location" = "oa_location") %>%
   dplyr::select(all_of(varlist_long))#%>%
 # mutate(knee=paste0(subject, signal_side))
+
+######## Filter OA location ########
+df_for_train_mean <- df_for_train_mean %>%
+  filter(!knee_oa_location %in% c("lateral", "lateral, patellofemoral", "medial, lateral")) %>%
+  filter(!knee_oa_location %in% c("isolated patellofemoral"))
+
+
+length(unique(df_for_train_mean$subject))
+####################################
 
 # Split into frontal and sagittal datasets (frontal = stance phase, sag = entire gait cycle)
 df_frontal <- df_for_train_mean %>%
@@ -48,7 +61,7 @@ df_sagittal_wide <- df_sagittal %>%
   pivot_wider(values_from = "value", names_from = "item") %>%
   ungroup()
 
-#ensure correct order of columns
+# ensure correct order of columns
 df_frontal_wide <- df_frontal_wide[, col_head_order_stance]
 df_sagittal_wide <- df_sagittal_wide[, col_head_order_full]
 
@@ -100,6 +113,7 @@ df_analysis_PC_sagittal <- merge(meta_sagittal, as.data.frame(df.pca.sagittal$zs
 write.fst(df_analysis_PC_frontal, here('data', 'chkpts', paste0(Sys.Date(), '_frontal_PC.fst')))
 write.fst(df_analysis_PC_sagittal, here('data', 'chkpts', paste0(Sys.Date(), '_sagittal_PC.fst')))
 
+
 summary(df.pca.frontal$pca_list$KNEE_ANGLE_Y)  #Frontal plane
 summary(df.pca.sagittal$pca_list$KNEE_ANGLE_X) #Sagittal
 #summary(df.pca$pca_list$KNEE_ANGLE_Z) # transverse 
@@ -138,104 +152,72 @@ ggsave("outputs/PC1_frontal_plot.png", plot = PC1_frontal_plot, width = 12, heig
 ggsave("outputs/PC2_frontal_plot.png", plot = PC2_frontal_plot, width = 12, height = 8, dpi = 300)
 ggsave("outputs/PC3_frontal_plot.png", plot = PC3_frontal_plot, width = 12, height = 8, dpi = 300)
 
-# Loading vector plot -- frontal plane 
-p1_front <- scr_plot(df.pca.frontal$pca_list$KNEE_ANGLE_Y, "PC2", "KNEE_ANGLE_Y")
-
-loadingVecs <- as.data.frame(df.pca.frontal$pca_list$KNEE_ANGLE_Y$rotation)
-
-p2_front <- loadingVecs %>%
-  rowid_to_column(var = "x") %>%
-  ggplot(aes(x = x, y = PC2)) +
-  geom_line(linewidth  = 1) +
-  geom_hline(yintercept = 0,
-             color = "black",
-             linewidth = 1) +
-  theme_minimal() +
-  theme(
-    axis.line = element_line(linewidth  = 1, colour = "black"),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    panel.background = element_blank(),
-    legend.position = 'none'
-  ) +
-  scale_x_continuous(expand = c(0, 0))
-
-# patchwork
-loading_vector_plot_front <- p1_front / p2_front
-print(loading_vector_plot_front)
-ggsave("outputs/loading_vector_plot_front_PC2.png", plot = loading_vector_plot_front, width = 12, height = 8, dpi = 300)
-
-##Frontal PC1
-p1_front_PC1 <- scr_plot(df.pca.frontal$pca_list$KNEE_ANGLE_Y, "PC1", "KNEE_ANGLE_Y")
-loadingVecs <- as.data.frame(df.pca.frontal$pca_list$KNEE_ANGLE_Y$rotation)
-p2_front_PC1 <- loadingVecs %>%
-  rowid_to_column(var = "x") %>%
-  ggplot(aes(x = x, y = PC1)) +
-  geom_line(linewidth = 1) +
-  geom_hline(yintercept = 0, color = "black", linewidth = 1) +
-  theme_minimal() +
-  theme(
-    axis.line = element_line(linewidth = 1, colour = "black"),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    panel.background = element_blank(),
-    legend.position = 'none'
-  ) +
-  labs(y = "Loading", x = "Gait Cycle (%)") +
-  scale_x_continuous(expand = c(0, 0))
-loading_vector_plot_front_PC1 <- p1_front_PC1 / p2_front_PC1
-loading_vector_plot_front_PC1
-ggsave("outputs/loading_vector_plot_front_PC1.png", plot = loading_vector_plot_front_PC1, width = 12, height = 8, dpi = 300)
-
-# Loading vector plot -- sagittal plane 
-p1_sag <- scr_plot(df.pca.sagittal$pca_list$KNEE_ANGLE_X, "PC2", "KNEE_ANGLE_X")
-
-loadingVecs <- as.data.frame(df.pca.sagittal$pca_list$KNEE_ANGLE_X$rotation)
-
-p2_sag <- loadingVecs %>%
-  rowid_to_column(var = "x") %>%
-  ggplot(aes(x = x, y = PC2)) +
-  geom_line(linewidth  = 1) +
-  geom_hline(yintercept = 0,
-             color = "black",
-             linewidth = 1) +
-  theme_minimal() +
-  theme(
-    axis.line = element_line(linewidth  = 1, colour = "black"),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    panel.background = element_blank(),
-    legend.position = 'none'
-  ) +
-  scale_x_continuous(expand = c(0, 0))
-
-# patchwork
-loading_vector_plot_sag <- p1_sag / p2_sag
-print(loading_vector_plot_sag)
-ggsave("outputs/loading_vector_plot_sag_PC2.png", plot = loading_vector_plot_sag, width = 12, height = 8, dpi = 300)
 
 
-p1_sag_PC1 <- scr_plot(df.pca.sagittal$pca_list$KNEE_ANGLE_X, "PC1", "KNEE_ANGLE_X")
-p2_sag_PC1 <- loadingVecs %>%
-  rowid_to_column(var = "x") %>%
-  ggplot(aes(x = x, y = PC1)) +
-  geom_line(linewidth = 1) +
-  geom_hline(yintercept = 0, color = "black", linewidth = 1) +
-  theme_minimal() +
-  theme(
-    axis.line = element_line(linewidth = 1, colour = "black"),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    panel.background = element_blank(),
-    legend.position = 'none'
-  ) +
-  labs(y = "Loading", x = "Gait Cycle (%)") +
-  scale_x_continuous(expand = c(0, 0))
-loading_vector_plot_sag_PC1 <- p1_sag_PC1 / p2_sag_PC1
-loading_vector_plot_sag_PC1
-ggsave("outputs/loading_vector_plot_sag_PC1.png", plot = loading_vector_plot_front_PC1, width = 12, height = 8, dpi = 300)
+####### Loading vector plots #########################################################################
+
+# Define time_points based on the number of rows in the rotation matrix
+n_time_points_sag <- nrow(df.pca.sagittal$pca_list$KNEE_ANGLE_X$rotation)  # Should be 101
+n_time_points_front <- nrow(df.pca.frontal$pca_list$KNEE_ANGLE_Y$rotation)  # Check this value
+time_points_sag <- seq(0, 100, length.out = n_time_points_sag)
+time_points_front <- seq(0, 100, length.out = n_time_points_front)
+
+# Function to create loading plots with consistent styling
+plot_loading <- function(pca_obj, pc_name, plane, time_points) {
+  if (nrow(pca_obj$rotation) != length(time_points)) {
+    stop(paste("Mismatch: rotation matrix has", nrow(pca_obj$rotation), "rows, but time_points has", length(time_points), "elements."))
+  }
+  loadings <- as.data.frame(pca_obj$rotation[, pc_name])
+  colnames(loadings) <- "Loading"
+  loadings <- loadings %>%
+    mutate(Time = time_points) %>%
+    rowid_to_column(var = "Index")
+  
+  p1 <- scr_plot(pca_obj, pc_name, paste0("KNEE_ANGLE_", plane))  # Assuming scr_plot works with PC name
+  p2 <- ggplot(loadings, aes(x = Time, y = Loading)) +
+    geom_line(linewidth = 1, color = "#1f77b4") +  # Distinctive color
+    geom_hline(yintercept = 0, color = "black", linewidth = 1) +
+    geom_hline(yintercept = c(0.3, -0.3), linetype = "dashed", color = "gray", linewidth = 0.5) +  # Threshold for significance
+    theme_minimal() +
+    theme(
+      axis.line = element_line(linewidth = 1, colour = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_blank(),
+      legend.position = "none"
+    ) +
+    labs(title = paste(plane, "Plane", pc_name, "Loadings"),
+         x = "Gait Cycle (%)", y = "Loading") +
+    scale_x_continuous(expand = c(0, 0), breaks = seq(0, 100, by = 25)) +
+    coord_cartesian(ylim = c(-1, 1))  # Fixed y-axis for consistency
+  
+  loading_plot <- p1 / p2
+  ggsave(paste0("outputs/loading_vector_plot_", tolower(plane), "_", pc_name, ".png"),
+         plot = loading_plot, width = 12, height = 8, dpi = 300)
+  return(loading_plot)
+}
+
+# Generate plots for frontal plane
+plot_loading(df.pca.frontal$pca_list$KNEE_ANGLE_Y, "PC1", "Y", time_points_front)
+plot_loading(df.pca.frontal$pca_list$KNEE_ANGLE_Y, "PC2", "Y", time_points_front)
+
+# Generate plots for sagittal plane
+plot_loading(df.pca.sagittal$pca_list$KNEE_ANGLE_X, "PC1", "X", time_points_sag)
+plot_loading(df.pca.sagittal$pca_list$KNEE_ANGLE_X, "PC2", "X", time_points_sag)
+plot_loading(df.pca.sagittal$pca_list$KNEE_ANGLE_X, "PC3", "X", time_points_sag)
+
+# Print and inspect loadings for key PCs
+print("Frontal Plane PC1 Loadings:")
+print(df.pca.frontal$pca_list$KNEE_ANGLE_Y$rotation[, "PC1"])
+print("Sagittal Plane PC1 Loadings:")
+print(df.pca.sagittal$pca_list$KNEE_ANGLE_X$rotation[, "PC1"])
+print("Sagittal Plane PC2 Loadings:")
+print(df.pca.sagittal$pca_list$KNEE_ANGLE_X$rotation[, "PC2"])
+print("Sagittal Plane PC3 Loadings:")
+print(df.pca.sagittal$pca_list$KNEE_ANGLE_X$rotation[, "PC3"])
 
 
+##############################################################################
 
 #All knees (Frontal plane)
 KneeFrontalPlanePC_stance<- df_analysis_PC_frontal %>%
@@ -360,7 +342,7 @@ print(df.pca.sagittal$pca_list$KNEE_ANGLE_X$rotation[,1])  # Loadings for PC1 (s
 #plot PC1 results against waveform time points 
   ## Positive peaks show where high PC1 subjects differ most from low PC1
 PC_loadings_frontal <- plot(df.pca.frontal$pca_list$KNEE_ANGLE_Y$rotation[,1], type = "l", xlab = "Waveform Time Point", ylab = "PC1 Loading",
-     main = "Frotnal Plane PC1 Loadings Across Waveform")
+     main = "Frontal Plane PC1 Loadings Across Waveform")
 PC_loadings_sag <- plot(df.pca.sagittal$pca_list$KNEE_ANGLE_X$rotation[,1], type = "l", xlab = "Waveform Time Point", ylab = "PC1 Loading",
      main = "Sagittal Plane PC1 Loadings Across Waveform")
 ggsave("outputs/loadings_plot_front_PC1.png", plot = PC_loadings_frontal, width = 12, height = 8, dpi = 300)
